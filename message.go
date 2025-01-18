@@ -37,38 +37,41 @@ func (m Message) HandlerArguments() []any {
 	return m.Arguments[1:] // exclude event name
 }
 
-// Response returns the response for this message
-func (m Message) Response() Response {
-	if m.ResponseData == nil {
+// Response returns the response data and error for this message.
+func (m Message) Response() (any, error) {
+	if m.RequestID == nil {
+		return nil, errors.New("message is not a response")
+	}
+	if m.ResponseError == nil {
 		// No error
-		return Response{Data: m.ResponseData}
+		return m.ResponseData, nil
 	}
 	// Handle JavaScript error
 	if m.ResponseJSError {
 		jsErr, ok := m.ResponseError.(map[string]any)
 		if !ok {
-			return Response{Error: errors.New(
+			return nil, errors.New(
 				"response is a malformed JavaScript error: not an object",
-			)}
+			)
 		}
 		errMsg, ok := jsErr["message"].(string)
 		if !ok {
-			return Response{Error: errors.New(
+			return nil, errors.New(
 				"response is a malformed JavaScript error: message key is not a string",
-			)}
+			)
 		}
-		return Response{Error: errors.New(errMsg)}
+		return nil, errors.New(errMsg)
 	}
 	// Handle string error
 	errMsg, ok := m.ResponseError.(string)
 	if !ok {
-		return Response{Error: errors.New("response error is not a string")}
+		return nil, errors.New("response error is not a string")
 	}
-	return Response{Error: errors.New(errMsg)}
+	return nil, errors.New(errMsg)
 }
 
-// Response represents a response for a request
-type Response struct {
+// MessageResponse is a response to a message
+type MessageResponse struct {
 	Data  any
 	Error error
 }

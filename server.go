@@ -1,175 +1,64 @@
 package wrapper
 
 import (
-	"context"
-	"fmt"
-	"log"
 	"sync"
 )
 
-// HandlerName represents the name of a WebSocket event handler
-type HandlerName struct {
-	Channel string
-	Event   string
-}
-
-// Server represents a WebSocket server
+// Server represents a server that accepts WebSocket connections, handles
+// inbound messages, and can send messages to connected clients.
 type Server struct {
 	ServerChannel
-	clientsMu       sync.RWMutex
-	clients         map[*Client]struct{}
-	handlersMu      sync.RWMutex
-	handlers        map[HandlerName]any
-	handlersOnce    map[HandlerName]any
-	requestMu       sync.RWMutex
-	requestID       int
-	pendingRequests map[int]chan Response
+	closeCh           chan struct{} // closed when the server is closed
+	clientsMu         sync.Mutex
+	clients           map[*Client]struct{}
+	handlersMu        sync.Mutex
+	handlers          map[handlerName]any
+	handlersOnce      map[handlerName]any
+	requestMu         sync.Mutex
+	requestID         int
+	requestResponseCh map[int]chan MessageResponse
 }
 
-// NewServer creates a new WebSocket server
 func NewServer() *Server {
-	wss := &Server{
-		clients: make(map[*Client]struct{}),
+	s := &Server{
+		closeCh:           make(chan struct{}),
+		clients:           make(map[*Client]struct{}),
+		handlers:          make(map[handlerName]any),
+		handlersOnce:      make(map[handlerName]any),
+		requestResponseCh: make(map[int]chan MessageResponse),
 	}
-	// set reference back to server, so channel methods work properly
-	wss.ServerChannel.server = wss
-	return wss
+	// set reference back to client, so channel methods work properly
+	s.ServerChannel.server = s
+	return s
 }
 
-// AddClient adds a new client connection to the server
-func (server *Server) AddClient(ctx context.Context, conn Conn) {
-	server.clientsMu.Lock()
-	server.clients[conn] = struct{}{}
-	server.clientsMu.Unlock()
+// Accept adds a new client connection to the server
+func (s *Server) Accept(conn Conn) {
+	client := newClient(conn, s)
+	s.clientsMu.Lock()
+	s.clients[client] = struct{}{}
+	s.clientsMu.Unlock()
 
-	go server.readMessages(ctx, conn)
+	go client.readMessages()
 }
 
-func (server *Server) readMessages(ctx context.Context, conn Conn) {
-	for {
-		var msg Message
-		err := conn.ReadMessage(&msg)
-		if err != nil {
-			log.Printf("Error reading message: %v", err)
-			conn.Close()
-			server.clientsMu.Lock()
-			delete(server.clients, conn)
-			server.clientsMu.Unlock()
-			return
-		}
+// Close closes the server and all connected clients. Returns the first error
+// encountered while closing clients.
+func (s *Server) Close() error {
+	var clientErr error
+	close(s.closeCh)
 
-		if message.IgnoreIfFalse != nil && *message.IgnoreIfFalse == false {
-			continue // ignore message
-		}
-
-		if message.ID != 0 && message.Data != nil {
-			server.handleResponse(conn, message)
-		} else if message.ID != 0 && message.Error != nil {
-			server.handleRejection(conn, message)
-		} else if message.ID != 0 {
-			server.handleRequest(conn, message)
-		} else {
-			server.handleEvent(conn, message)
+	// Close all client connections
+	for client := range s.clients {
+		if err := client.Close(
+			StatusGoingAway, "server is closing",
+		); err != nil && clientErr == nil {
+			clientErr = err
 		}
 	}
-}
 
-// handleEvent handles an response message for a pending request. Returns true
-// if the message was handled, false otherwise.
-func (server *Server) handleResponse(msg Message) bool {
-	if msg.RequestID == nil {
-		return false
-	}
-	server.requestMu.Lock()
-	defer server.requestMu.Unlock()
-	if ch, ok := server.pendingRequests[requestID]; ok {
-		ch <- response
-		return true
-	}
-	return false
-}
+	// Abort all pending requests
+	// ...
 
-// Of returns a channel on the server
-func (srv *Server) Of(channel string) ServerChannel {
-	return ServerChannel{
-		name:   channel,
-		server: srv,
-	}
-}
-
-type ServerChannel struct {
-	name   string
-	server *WebSocketServer
-}
-
-func (c ServerChannel) On(eventName string, handler any) {
-	c.server.handlersMu.Lock()
-	c.server.handlers[handlerName{Channel: c.name, Event: eventName}] = handler
-	c.server.handlersMu.Unlock()
-}
-
-func (c ServerChannel) Once(eventName string, handler any) {
-	c.server.handlersMu.Lock()
-	c.server.handlers[handlerName{Channel: c.name, Event: eventName}] = handler
-	c.server.handlersMu.Unlock()
-}
-
-// Emit broadcasts an event to all clients
-func (c ServerChannel) Emit(eventName string, arguments ...any) {
-	c.server.clientsMu.RLock()
-	defer c.server.clientsMu.RUnlock()
-	for client := range c.server.clients {
-		msg := Message{
-			Channel:   c.name,
-			Event:     eventName,
-			Arguments: arguments,
-		}
-		err := client.conn.WriteMessage(&msg)
-		if err != nil {
-			c.server.RemoveClient(conn, err)
-		}
-	}
-}
-
-// RequestClient sends a request to the specified client
-func (c ServerChannel) RequestClient(
-	ctx context.Context,
-	client *Client,
-	arguments ...any,
-) Response {
-	if len(arguments) == 0 {
-		return Response{Error: fmt.Errorf("no event name provided")}
-	}
-
-	// Configure the response handler
-	c.server.requestMu.Lock()
-	requestID := c.server.requestID
-	c.server.pendingRequests[requestID] = make(chan Response, 1)
-	c.server.requestID++
-	c.server.requestMu.Unlock()
-	defer func() {
-		c.server.requestMu.Lock()
-		delete(c.server.pendingRequests, requestID)
-		c.server.requestMu.Unlock()
-	}
-
-	// Send the request
-	err := client.conn.WriteMessage(ctx, &Message{
-		Channel:   c.name,
-		Arguments: arguments,
-	})
-	if err != nil {
-		return Response{Error: fmt.Errorf("error sending request: %w", err)}
-	}
-
-	// Wait for the response
-	select {
-	case res := <-c.server.pendingRequests[requestID]:
-		return res
-	case <-ctx.Done():
-		c.server.requestMu.Lock()
-		delete(c.server.pendingRequests, requestID)
-		c.server.requestMu.Unlock()
-		return Response{Error: ctx.Err()}
-	}
+	return clientErr
 }
