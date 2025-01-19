@@ -8,15 +8,15 @@ import (
 
 // Client represents a WebSocket client
 type Client struct {
-	ClientChannel
-	closeCh      chan struct{} // closed when the client is closed
-	conn         Conn          // WebSocket connection
-	server       *Server
-	handlersMu   sync.Mutex
-	handlers     map[handlerName]any
-	handlersOnce map[handlerName]any
-	dataMu       sync.Mutex
-	data         map[string]any
+	ClientChannel               // the "main" client channel with no name
+	closeCh       chan struct{} // closed when the client is closed
+	conn          Conn          // WebSocket connection
+	server        *Server
+	handlersMu    sync.Mutex
+	handlers      map[handlerName]any
+	handlersOnce  map[handlerName]any
+	dataMu        sync.Mutex
+	data          map[string]any
 }
 
 func newClient(conn Conn, server *Server) *Client {
@@ -94,7 +94,7 @@ func (c *Client) sendRequest(
 	ctx context.Context, channel string, arguments ...any,
 ) (any, error) {
 	// Create channel for message response
-	respCh := make(chan MessageResponse, 1)
+	respCh := make(chan messageResponse, 1)
 
 	// Add channel to server's pending requests and get unique request ID
 	c.server.requestMu.Lock()
@@ -243,7 +243,7 @@ func (c *Client) handleMessage(ctx context.Context, msg Message) error {
 
 	// Process response
 	res, err := msg.Response()
-	respCh <- MessageResponse{res, err}
+	respCh <- messageResponse{res, err}
 	close(respCh)
 
 	return nil

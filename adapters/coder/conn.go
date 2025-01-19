@@ -1,3 +1,7 @@
+// This package enables the use of the github.com/coder/websocket package with
+// the ws-server-wrapper library. It provides an adapter between a Conn from the
+// github.com/coder/websocket package and a Conn in the ws-server-wrapper
+// library.
 package coder
 
 import (
@@ -8,12 +12,13 @@ import (
 	"github.com/coder/websocket/wsjson"
 )
 
-// Wrap wraps a coder/websocket Conn as a wrapper.Conn
+// Wrap wraps a websocket.Conn from github.com/coder/websocket as a wrapper.Conn
+// that can be passed to the wrapper.Server.Accept method.
 func Wrap(c *websocket.Conn) wrapper.Conn {
 	return conn{c}
 }
 
-// conn wraps a coder/websocket.Conn
+// conn implements the wrapper.Conn interface for a websocket.Conn
 type conn struct {
 	*websocket.Conn
 }

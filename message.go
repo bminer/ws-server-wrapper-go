@@ -4,7 +4,7 @@ import (
 	"errors"
 )
 
-// Message is ws-wrapper JSON-encoded message
+// Message is a ws-wrapper JSON-encoded message.
 // See https://github.com/bminer/ws-wrapper/blob/master/README.md#protocol
 type Message struct {
 	Channel         string `json:"c,omitempty"`
@@ -70,8 +70,8 @@ func (m Message) Response() (any, error) {
 	return nil, errors.New(errMsg)
 }
 
-// MessageResponse is a response to a message
-type MessageResponse struct {
+// messageResponse is a response to a message
+type messageResponse struct {
 	Data  any
 	Error error
 }

@@ -60,6 +60,11 @@ func (c ClientChannel) Request(
 	return c.client.sendRequest(ctx, c.name, arguments...)
 }
 
+// Name returns the name of the channel
+func (c ClientChannel) Name() string {
+	return c.name
+}
+
 // ServerChannel is a channel on which events can be sent and received. Events
 // emitted or requests sent are sent to all connected clients to the channel of
 // the same name on the remote end. See ClientChannel.On for more information
@@ -111,4 +116,9 @@ func (c ServerChannel) Emit(
 		}
 	}
 	return
+}
+
+// Name returns the name of the channel
+func (c ServerChannel) Name() string {
+	return c.name
 }
