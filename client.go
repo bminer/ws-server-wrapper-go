@@ -47,7 +47,6 @@ func (c *Client) Close(status StatusCode, reason string) error {
 func (c *Client) closeWithoutLock(status StatusCode, reason string) error {
 	// Clear c.conn to indicate connection is closed
 	c.dataMu.Lock()
-	defer c.dataMu.Unlock()
 	if c.conn == nil {
 		// Connection already closed
 		return nil
@@ -55,6 +54,7 @@ func (c *Client) closeWithoutLock(status StatusCode, reason string) error {
 	close(c.closeCh)
 	conn := c.conn
 	c.conn = nil
+	c.dataMu.Unlock()
 	c.emitClose(status, reason)
 	c.server.emitClose(c, status, reason)
 	return conn.Close(status, reason)
@@ -89,7 +89,13 @@ func (c *Client) sendReject(ctx context.Context, requestID *int, err error) erro
 	} else if err == nil {
 		return fmt.Errorf("error is required")
 	}
-	return c.conn.WriteMessage(ctx, &Message{
+	c.dataMu.Lock()
+	conn := c.conn
+	c.dataMu.Unlock()
+	if conn == nil {
+		return nil // ignore message if connection is closed
+	}
+	return conn.WriteMessage(ctx, &Message{
 		RequestID:     requestID,
 		ResponseError: err.Error(),
 	})
@@ -100,7 +106,13 @@ func (c *Client) sendResolve(ctx context.Context, requestID *int, data any) erro
 	if requestID == nil {
 		return fmt.Errorf("requestID is required")
 	}
-	return c.conn.WriteMessage(ctx, &Message{
+	c.dataMu.Lock()
+	conn := c.conn
+	c.dataMu.Unlock()
+	if conn == nil {
+		return nil // ignore message if connection is closed
+	}
+	return conn.WriteMessage(ctx, &Message{
 		RequestID:    requestID,
 		ResponseData: data,
 	})
@@ -108,7 +120,13 @@ func (c *Client) sendResolve(ctx context.Context, requestID *int, data any) erro
 
 // sendEvent sends an event to the client
 func (c *Client) sendEvent(ctx context.Context, channel string, arguments ...any) error {
-	return c.conn.WriteMessage(ctx, &Message{
+	c.dataMu.Lock()
+	conn := c.conn
+	c.dataMu.Unlock()
+	if conn == nil {
+		return fmt.Errorf("connection is closed")
+	}
+	return conn.WriteMessage(ctx, &Message{
 		Channel:   channel,
 		Arguments: arguments,
 	})
@@ -118,6 +136,13 @@ func (c *Client) sendEvent(ctx context.Context, channel string, arguments ...any
 func (c *Client) sendRequest(
 	ctx context.Context, channel string, arguments ...any,
 ) (any, error) {
+	c.dataMu.Lock()
+	conn := c.conn
+	c.dataMu.Unlock()
+	if conn == nil {
+		return nil, fmt.Errorf("connection is closed")
+	}
+
 	// Create channel for message response
 	respCh := make(chan messageResponse, 1)
 
@@ -135,7 +160,7 @@ func (c *Client) sendRequest(
 	}
 
 	// Send request to client
-	err := c.conn.WriteMessage(ctx, &Message{
+	err := conn.WriteMessage(ctx, &Message{
 		Channel:   channel,
 		Arguments: arguments,
 		RequestID: &requestID,
@@ -171,9 +196,12 @@ func (c *Client) readMessages() {
 	}()
 
 	// Read messages from the client connection
+	c.dataMu.Lock()
+	conn := c.conn
+	c.dataMu.Unlock()
 	for {
 		var msg Message
-		err := c.conn.ReadMessage(ctx, &msg)
+		err := conn.ReadMessage(ctx, &msg)
 		if err != nil {
 			// Emit error and close client
 			err = fmt.Errorf("read message: %w", err)

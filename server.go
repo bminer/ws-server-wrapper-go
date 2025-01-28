@@ -63,17 +63,19 @@ func (s *Server) Close() error {
 	var clientErr error
 	close(s.closeCh)
 
-	// Close all client connections
 	s.clientsMu.Lock()
-	for client := range s.clients {
-		if err := client.client.closeWithoutLock(
+	clients := s.clients
+	s.clients = nil // stop accepting new connections
+	s.clientsMu.Unlock()
+
+	// Close all client connections
+	for client := range clients {
+		if err := client.closeWithoutLock(
 			StatusGoingAway, "server is closing",
 		); err != nil && clientErr == nil {
 			clientErr = err
 		}
 	}
-	s.clients = nil // stop accepting new connections
-	s.clientsMu.Unlock()
 
 	// Abort all pending requests
 	s.requestMu.Lock()

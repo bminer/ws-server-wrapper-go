@@ -206,13 +206,22 @@ func (c ServerChannel) Once(eventName string, handler any) ServerChannel {
 func (c ServerChannel) Emit(
 	ctx context.Context, arguments ...any,
 ) (errs []ClientError) {
+	eventName, err := checkEventName(arguments)
+	if err != nil {
+		errs = append(errs, ClientError{Client: nil, error: err})
+		return
+	}
+	if c.name == "" && IsReservedEvent(eventName) {
+		errs = append(errs, ClientError{Client: nil, error: fmt.Errorf(
+			"cannot emit reserved event '%s' on main channel", eventName,
+		)})
+		return
+	}
 	c.server.clientsMu.Lock()
 	defer c.server.clientsMu.Unlock()
+
 	for client := range c.server.clients {
-		err := client.conn.WriteMessage(ctx, &Message{
-			Channel:   c.name,
-			Arguments: arguments,
-		})
+		err := client.sendEvent(ctx, c.name, arguments...)
 		if err != nil {
 			errs = append(errs, ClientError{
 				Client: client,
