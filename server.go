@@ -1,6 +1,7 @@
 package wrapper
 
 import (
+	"fmt"
 	"sync"
 )
 
@@ -14,7 +15,7 @@ type Server struct {
 	ServerChannel                   // the "main" server channel with no name
 	closeCh           chan struct{} // closed when the server is closed
 	clientsMu         sync.Mutex
-	clients           map[*Client]struct{}
+	clients           map[*Client]struct{} // set to nil when server is closed
 	handlersMu        sync.Mutex
 	handlers          map[handlerName]any
 	handlersOnce      map[handlerName]any
@@ -39,13 +40,21 @@ func NewServer() *Server {
 
 // Accept adds a new client connection to the server. conn only needs to
 // implement the Conn interface.
-func (s *Server) Accept(conn Conn) {
-	client := newClient(conn, s)
+func (s *Server) Accept(conn Conn) error {
 	s.clientsMu.Lock()
+	defer s.clientsMu.Unlock()
+
+	if s.clients == nil {
+		return fmt.Errorf("server is closed and cannot accept connections")
+	}
+
+	// Add client to the set
+	client := newClient(conn, s)
 	s.clients[client] = struct{}{}
-	s.clientsMu.Unlock()
 
 	go client.readMessages()
+	s.emitOpen(client)
+	return nil
 }
 
 // Close closes the server and all connected clients. Returns the first error
@@ -55,16 +64,25 @@ func (s *Server) Close() error {
 	close(s.closeCh)
 
 	// Close all client connections
+	s.clientsMu.Lock()
 	for client := range s.clients {
-		if err := client.Close(
+		if err := client.client.closeWithoutLock(
 			StatusGoingAway, "server is closing",
 		); err != nil && clientErr == nil {
 			clientErr = err
 		}
 	}
+	s.clients = nil // stop accepting new connections
+	s.clientsMu.Unlock()
 
 	// Abort all pending requests
-	// ...
+	s.requestMu.Lock()
+	for _, respCh := range s.requestResponseCh {
+		respCh <- messageResponse{nil, fmt.Errorf("request aborted")}
+		close(respCh)
+	}
+	clear(s.requestResponseCh)
+	s.requestMu.Unlock()
 
 	return clientErr
 }
@@ -75,4 +93,50 @@ func (s *Server) Of(name string) *ServerChannel {
 		name:   name,
 		server: s,
 	}
+}
+
+// emitOpen calls the "open" and "connect" event handlers on the main channel
+func (s *Server) emitOpen(c *Client) bool {
+	return emitReserved(
+		func(f any) bool {
+			if f, ok := f.(OpenHandler); ok {
+				f(c)
+				return true
+			}
+			return false
+		},
+		&s.handlersMu, s.handlers, s.handlersOnce,
+		"open", "connect",
+	)
+}
+
+// emitError calls the "error" event handler on the main channel
+func (s *Server) emitError(c *Client, err error) bool {
+	return emitReserved(
+		func(f any) bool {
+			if f, ok := f.(ErrorHandler); ok {
+				f(c, err)
+				return true
+			}
+			return false
+		},
+		&s.handlersMu, s.handlers, s.handlersOnce,
+		"error",
+	)
+}
+
+// emitClose calls the "close" and "disconnect" event handlers on the main
+// channel
+func (s *Server) emitClose(c *Client, status StatusCode, reason string) bool {
+	return emitReserved(
+		func(f any) bool {
+			if f, ok := f.(CloseHandler); ok {
+				f(c, status, reason)
+				return true
+			}
+			return false
+		},
+		&s.handlersMu, s.handlers, s.handlersOnce,
+		"close", "disconnect",
+	)
 }

@@ -2,6 +2,7 @@ package wrapper
 
 import (
 	"errors"
+	"log/slog"
 )
 
 // Message is a ws-wrapper JSON-encoded message.
@@ -19,7 +20,7 @@ type Message struct {
 // EventName returns the name of the event or empty string if the message is
 // invalid
 func (m Message) EventName() string {
-	if len(m.Arguments) == 0 {
+	if len(m.Arguments) < 1 {
 		return ""
 	}
 	name, ok := m.Arguments[0].(string)
@@ -68,6 +69,38 @@ func (m Message) Response() (any, error) {
 		return nil, errors.New("response error is not a string")
 	}
 	return nil, errors.New(errMsg)
+}
+
+func (m Message) LogValue() slog.Value {
+	if m.IgnoreIfFalse != nil && !*m.IgnoreIfFalse {
+		return slog.GroupValue(slog.Bool("ignored", true))
+	}
+
+	var attrs []slog.Attr
+	eventName := m.EventName()
+	if eventName != "" {
+		attrs = []slog.Attr{
+			slog.String("ch", m.Channel),
+			slog.String("event", eventName),
+			slog.Any("args", m.HandlerArguments()),
+		}
+	} else if m.RequestID != nil {
+		if m.ResponseError == nil {
+			attrs = []slog.Attr{
+				slog.Int("reqID", *m.RequestID),
+				slog.Any("error", m.ResponseError),
+				slog.Bool("js", m.ResponseJSError),
+			}
+		} else {
+			attrs = []slog.Attr{
+				slog.Int("reqID", *m.RequestID),
+				slog.Any("data", m.ResponseData),
+			}
+		}
+	} else {
+		attrs = []slog.Attr{slog.Bool("invalid", true)}
+	}
+	return slog.GroupValue(attrs...)
 }
 
 // messageResponse is a response to a message

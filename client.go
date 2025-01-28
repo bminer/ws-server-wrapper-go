@@ -10,7 +10,7 @@ import (
 type Client struct {
 	ClientChannel               // the "main" client channel with no name
 	closeCh       chan struct{} // closed when the client is closed
-	conn          Conn          // WebSocket connection
+	conn          Conn          // WebSocket connection; set to nil when closed
 	server        *Server
 	handlersMu    sync.Mutex
 	handlers      map[handlerName]any
@@ -36,11 +36,28 @@ func newClient(conn Conn, server *Server) *Client {
 // Close closes the client connection and removes it from the list of clients
 // connected to the server.
 func (c *Client) Close(status StatusCode, reason string) error {
-	close(c.closeCh)
 	c.server.clientsMu.Lock()
 	defer c.server.clientsMu.Unlock()
 	delete(c.server.clients, c)
-	return c.conn.Close(status, reason)
+	return c.closeWithoutLock(status, reason)
+}
+
+// closeWithoutLock closes the client connection without locking the server's
+// clientsMu lock. This is used when the server is closing all clients.
+func (c *Client) closeWithoutLock(status StatusCode, reason string) error {
+	// Clear c.conn to indicate connection is closed
+	c.dataMu.Lock()
+	defer c.dataMu.Unlock()
+	if c.conn == nil {
+		// Connection already closed
+		return nil
+	}
+	close(c.closeCh)
+	conn := c.conn
+	c.conn = nil
+	c.emitClose(status, reason)
+	c.server.emitClose(c, status, reason)
+	return conn.Close(status, reason)
 }
 
 // Get returns the data for the client at the specified key
@@ -67,6 +84,11 @@ func (c *Client) Of(name string) ClientChannel {
 
 // sendReject sends a reject / error response to a request
 func (c *Client) sendReject(ctx context.Context, requestID *int, err error) error {
+	if requestID == nil {
+		return fmt.Errorf("requestID is required")
+	} else if err == nil {
+		return fmt.Errorf("error is required")
+	}
 	return c.conn.WriteMessage(ctx, &Message{
 		RequestID:     requestID,
 		ResponseError: err.Error(),
@@ -75,6 +97,9 @@ func (c *Client) sendReject(ctx context.Context, requestID *int, err error) erro
 
 // sendResolve sends a resolve / data response to a request
 func (c *Client) sendResolve(ctx context.Context, requestID *int, data any) error {
+	if requestID == nil {
+		return fmt.Errorf("requestID is required")
+	}
 	return c.conn.WriteMessage(ctx, &Message{
 		RequestID:    requestID,
 		ResponseData: data,
@@ -136,8 +161,10 @@ func (c *Client) sendRequest(
 // readMessages reads messages from the client connection and handles them.
 // Cancel the context to stop reading messages
 func (c *Client) readMessages() {
-	// Create a context that is cancelled when the client is closed
+	// Create a context that is cancelled when the client is closed and stores
+	// the client itself
 	ctx, cancel := context.WithCancel(context.Background())
+	ctx = context.WithValue(ctx, ClientKey, c)
 	go func() {
 		<-c.closeCh
 		cancel()
@@ -148,18 +175,77 @@ func (c *Client) readMessages() {
 		var msg Message
 		err := c.conn.ReadMessage(ctx, &msg)
 		if err != nil {
-			// Close the client
-			err = fmt.Errorf("message read: %w", err)
-			c.Close(StatusProtocolError, err.Error())
+			// Emit error and close client
+			err = fmt.Errorf("read message: %w", err)
+			c.emitError(err)
+			c.server.emitError(c, err)
+			c.Close(StatusInternalError, err.Error())
 			return
 		}
+
+		// Emit only valid messages
+		c.emitMessage(msg)
 
 		if msg.IgnoreIfFalse != nil && *msg.IgnoreIfFalse == false {
 			continue // ignore message
 		}
 
-		c.handleMessage(ctx, msg)
+		err = c.handleMessage(ctx, msg)
+		if err != nil {
+			// Emit error and close client
+			err = fmt.Errorf("handle message: %w", err)
+			c.emitError(err)
+			c.server.emitError(c, err)
+			c.Close(StatusInternalError, err.Error())
+			return
+		}
 	}
+}
+
+// emitError calls the "error" event handler on the main channel
+func (c *Client) emitError(err error) bool {
+	return emitReserved(
+		func(f any) bool {
+			if f, ok := f.(ErrorHandler); ok {
+				f(c, err)
+				return true
+			}
+			return false
+		},
+		&c.handlersMu, c.handlers, c.handlersOnce,
+		"error",
+	)
+}
+
+// emitMessage calls the "message" event handler on the main channel
+func (c *Client) emitMessage(msg Message) bool {
+	return emitReserved(
+		func(f any) bool {
+			if f, ok := f.(MessageHandler); ok {
+				f(c, msg)
+				return true
+			}
+			return false
+		},
+		&c.handlersMu, c.handlers, c.handlersOnce,
+		"message",
+	)
+}
+
+// emitClose calls the "close" and "disconnect" event handlers on the main
+// channel
+func (c *Client) emitClose(status StatusCode, reason string) bool {
+	return emitReserved(
+		func(f any) bool {
+			if f, ok := f.(CloseHandler); ok {
+				f(c, status, reason)
+				return true
+			}
+			return false
+		},
+		&c.handlersMu, c.handlers, c.handlersOnce,
+		"close", "disconnect",
+	)
 }
 
 // handleMessage processes an inbound message for this client. Returns an error
