@@ -37,8 +37,8 @@ func newClient(conn Conn, server *Server) *Client {
 // connected to the server.
 func (c *Client) Close(status StatusCode, reason string) error {
 	c.server.clientsMu.Lock()
-	defer c.server.clientsMu.Unlock()
 	delete(c.server.clients, c)
+	c.server.clientsMu.Unlock()
 	return c.closeWithoutLock(status, reason)
 }
 

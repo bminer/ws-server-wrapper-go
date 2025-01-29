@@ -42,15 +42,16 @@ func NewServer() *Server {
 // implement the Conn interface.
 func (s *Server) Accept(conn Conn) error {
 	s.clientsMu.Lock()
-	defer s.clientsMu.Unlock()
 
 	if s.clients == nil {
+		s.clientsMu.Unlock()
 		return fmt.Errorf("server is closed and cannot accept connections")
 	}
 
 	// Add client to the set
 	client := newClient(conn, s)
 	s.clients[client] = struct{}{}
+	s.clientsMu.Unlock()
 
 	go client.readMessages()
 	s.emitOpen(client)
