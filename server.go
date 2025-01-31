@@ -18,6 +18,7 @@ type Server struct {
 	handlersMu        sync.Mutex
 	handlers          map[handlerName]any
 	handlersOnce      map[handlerName]any
+	handlerCtxFunc    HandlerContextFunc
 	requestMu         sync.Mutex
 	requestID         int
 	requestResponseCh map[int]chan messageResponse
@@ -93,6 +94,16 @@ func (s *Server) Of(name string) *ServerChannel {
 		name:   name,
 		server: s,
 	}
+}
+
+// SetHandlerContext sets the handler context function. This function is called
+// before every event handler is called and is used to modify the context
+// passed to every event handler. It can be used to implement timeouts for
+// individual event handlers, for example.
+func (s *Server) SetHandlerContext(f HandlerContextFunc) {
+	s.handlersMu.Lock()
+	s.handlerCtxFunc = f
+	s.handlersMu.Unlock()
 }
 
 // emitOpen calls the "open" and "connect" event handlers on the main channel

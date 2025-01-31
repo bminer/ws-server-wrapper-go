@@ -300,6 +300,7 @@ func (c *Client) handleMessage(ctx context.Context, msg Message) error {
 
 		// Get client-specific handler
 		c.handlersMu.Lock()
+		handlerCtxFunc := c.server.handlerCtxFunc
 		handler, ok := c.handlersOnce[handlerID]
 		if ok {
 			delete(c.handlersOnce, handlerID)
@@ -337,10 +338,20 @@ func (c *Client) handleMessage(ctx context.Context, msg Message) error {
 			return nil
 		}
 
+		// Wrap context for handler execution
+		handlerCtx := ctx
+		var cancel context.CancelFunc
+		if handlerCtxFunc != nil {
+			handlerCtx, cancel = handlerCtxFunc(ctx, msg.Channel, eventName)
+		}
+
 		// Call handler with arguments
 		result, err := callHandler(
-			ctx, handler, msg.HandlerArguments(),
+			handlerCtx, handler, msg.HandlerArguments(),
 		)
+		if cancel != nil {
+			cancel()
+		}
 		if msg.RequestID == nil {
 			// Silently ignore the response if it's not a request
 			return nil

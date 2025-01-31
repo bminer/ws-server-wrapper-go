@@ -55,6 +55,14 @@ type contextKey string
 // the *wrapper.Client object that emitted the event.
 const ClientKey = contextKey("client")
 
+// HandlerContextFunc is a function that can modify the context passed to every
+// registered event handler before it is called.
+type HandlerContextFunc func(
+	ctx context.Context,
+	channel string,
+	eventName string,
+) (context.Context, context.CancelFunc)
+
 // Type aliases for "reserved" event handlers
 type OpenHandler = func(*Client)
 type ErrorHandler = func(*Client, error)
