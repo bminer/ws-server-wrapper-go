@@ -8,9 +8,10 @@ import (
 
 // Client represents a WebSocket client
 type Client struct {
-	ClientChannel               // the "main" client channel with no name
-	closeCh       chan struct{} // closed when the client is closed
-	conn          Conn          // WebSocket connection; set to nil when closed
+	ClientChannel                 // the "main" client channel with no name
+	ctx           context.Context // cancelled when the client is closed
+	ctxCancel     func(error)     // called when the client is closed
+	conn          Conn            // WebSocket connection; set to nil when closed
 	server        *Server
 	handlersMu    sync.Mutex
 	handlers      map[handlerName]any
@@ -20,14 +21,28 @@ type Client struct {
 }
 
 func newClient(conn Conn, server *Server) *Client {
+	// Create client
 	c := &Client{
-		closeCh:      make(chan struct{}),
 		conn:         conn,
 		server:       server,
 		handlers:     make(map[handlerName]any),
 		handlersOnce: make(map[handlerName]any),
 		data:         make(map[string]any),
 	}
+
+	// Create a context that is cancelled when the client is closed and stores
+	// the client itself.
+	ctxClient, cancel := context.WithCancelCause(context.Background())
+	ctxClient = context.WithValue(ctxClient, ClientKey, c)
+	// I know it is generally frowned upon to store the Context in a struct, but
+	// we are using it as a signal to cancel readMessages and for request
+	// cancellation. I also feel like this approach is slightly better than
+	// using a channel; previously a goroutine per client was created simply to
+	// read from a close channel and cancel the readMessages Context. It feels
+	// a bit wasteful.
+	c.ctx = ctxClient
+	c.ctxCancel = cancel
+
 	// set reference back to client, so channel methods work properly
 	c.ClientChannel.client = c
 	return c
@@ -45,13 +60,13 @@ func (c *Client) Close(status StatusCode, reason string) error {
 // closeWithoutLock closes the client connection without locking the server's
 // clientsMu lock. This is used when the server is closing all clients.
 func (c *Client) closeWithoutLock(status StatusCode, reason string) error {
+	c.ctxCancel(fmt.Errorf("client closed (status: %v)", status))
 	// Clear c.conn to indicate connection is closed
 	c.dataMu.Lock()
 	if c.conn == nil {
 		// Connection already closed
 		return nil
 	}
-	close(c.closeCh)
 	conn := c.conn
 	c.conn = nil
 	c.dataMu.Unlock()
@@ -138,6 +153,7 @@ func (c *Client) sendRequest(
 ) (any, error) {
 	c.dataMu.Lock()
 	conn := c.conn
+	ctxClient := c.ctx
 	c.dataMu.Unlock()
 	if conn == nil {
 		return nil, fmt.Errorf("connection is closed")
@@ -176,28 +192,20 @@ func (c *Client) sendRequest(
 			return nil, fmt.Errorf("response channel closed unexpectedly")
 		}
 		return resp.Data, resp.Error
-	case <-c.closeCh:
-		return nil, fmt.Errorf("awaiting response: client closed")
+	case <-ctxClient.Done():
+		return nil, fmt.Errorf("awaiting response: %w", context.Cause(ctxClient))
 	case <-ctx.Done():
-		return nil, fmt.Errorf("awaiting response: %w", ctx.Err())
+		return nil, fmt.Errorf("awaiting response: %w", context.Cause(ctx))
 	}
 }
 
 // readMessages reads messages from the client connection and handles them.
 // Cancel the context to stop reading messages
 func (c *Client) readMessages() {
-	// Create a context that is cancelled when the client is closed and stores
-	// the client itself
-	ctx, cancel := context.WithCancel(context.Background())
-	ctx = context.WithValue(ctx, ClientKey, c)
-	go func() {
-		<-c.closeCh
-		cancel()
-	}()
-
 	// Read messages from the client connection
 	c.dataMu.Lock()
 	conn := c.conn
+	ctx := c.ctx
 	c.dataMu.Unlock()
 	for {
 		var msg Message
@@ -209,6 +217,12 @@ func (c *Client) readMessages() {
 			c.server.emitError(c, err)
 			c.Close(StatusInternalError, err.Error())
 			return
+		}
+
+		select {
+		case <-ctx.Done():
+			return // client closed
+		default:
 		}
 
 		// Emit only valid messages

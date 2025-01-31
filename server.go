@@ -12,8 +12,7 @@ import (
 // WebSocket library. Various adapter libraries are available in the adapters
 // subdirectory.
 type Server struct {
-	ServerChannel                   // the "main" server channel with no name
-	closeCh           chan struct{} // closed when the server is closed
+	ServerChannel     // the "main" server channel with no name
 	clientsMu         sync.Mutex
 	clients           map[*Client]struct{} // set to nil when server is closed
 	handlersMu        sync.Mutex
@@ -27,7 +26,6 @@ type Server struct {
 // NewServer creates a new server.
 func NewServer() *Server {
 	s := &Server{
-		closeCh:           make(chan struct{}),
 		clients:           make(map[*Client]struct{}),
 		handlers:          make(map[handlerName]any),
 		handlersOnce:      make(map[handlerName]any),
@@ -62,7 +60,6 @@ func (s *Server) Accept(conn Conn) error {
 // encountered while closing clients.
 func (s *Server) Close() error {
 	var clientErr error
-	close(s.closeCh)
 
 	s.clientsMu.Lock()
 	clients := s.clients
