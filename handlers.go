@@ -49,12 +49,6 @@ type handlerName struct {
 var errorType = reflect.TypeOf((*error)(nil)).Elem()
 var contextType = reflect.TypeOf((*context.Context)(nil)).Elem()
 
-type contextKey string
-
-// ClientKey is the value to be passed to the context's Value method to return
-// the *wrapper.Client object that emitted the event.
-const ClientKey = contextKey("client")
-
 // HandlerContextFunc is a function that can modify the context passed to every
 // registered event handler before it is called.
 type HandlerContextFunc func(
