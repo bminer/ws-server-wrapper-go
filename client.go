@@ -346,22 +346,34 @@ func (c *Client) handleMessage(ctx context.Context, msg Message) error {
 		}
 
 		// Call handler with arguments
-		result, err := callHandler(
-			handlerCtx, handler, msg.HandlerArguments(),
-		)
-		if cancel != nil {
-			cancel()
-		}
-		if msg.RequestID == nil {
-			// Silently ignore the response if it's not a request
-			return nil
-		}
-		if err != nil {
-			// Send error response
-			return c.sendReject(ctx, msg.RequestID, err)
-		}
-		// Send data response
-		return c.sendResolve(ctx, msg.RequestID, result)
+		go func() {
+			result, err := callHandler(
+				handlerCtx, handler, msg.HandlerArguments(),
+			)
+			if cancel != nil {
+				cancel()
+			}
+
+			if msg.RequestID == nil {
+				// Silently ignore the response if it's not a request
+				return
+			}
+			if err != nil {
+				// Send error response
+				err = c.sendReject(ctx, msg.RequestID, err)
+			} else {
+				// Send data response
+				err = c.sendResolve(ctx, msg.RequestID, result)
+			}
+			if err != nil {
+				// Emit error and close client
+				err = fmt.Errorf("responding to request: %w", err)
+				c.emitError(err)
+				c.server.emitError(c, err)
+				c.Close(StatusInternalError, err.Error())
+			}
+		}()
+		return nil
 	}
 
 	// Try processing response to prior request
