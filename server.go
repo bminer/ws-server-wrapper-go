@@ -38,12 +38,14 @@ func NewServer() *Server {
 }
 
 // Accept adds a new client connection to the server. conn only needs to
-// implement the Conn interface.
+// implement the Conn interface. If the server has been closed, Accept will
+// return an error and close conn.
 func (s *Server) Accept(conn Conn) error {
 	s.clientsMu.Lock()
 
 	if s.clients == nil {
 		s.clientsMu.Unlock()
+		conn.Close(StatusGoingAway, "server is closed")
 		return fmt.Errorf("server is closed and cannot accept connections")
 	}
 
