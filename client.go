@@ -182,6 +182,9 @@ func (c *Client) sendRequest(
 		RequestID: &requestID,
 	})
 	if err != nil {
+		c.server.requestMu.Lock()
+		delete(c.server.requestResponseCh, requestID)
+		c.server.requestMu.Unlock()
 		return nil, fmt.Errorf("sending request: %w", err)
 	}
 
