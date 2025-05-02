@@ -111,24 +111,52 @@ func callHandler(
 	}
 	for i := 0; i < len(arguments); i++ {
 		argV := reflect.ValueOf(arguments[i]) // argument reflect.Value
-		argT := argV.Type()
-		handlerArgT := handlerT.In(argOffset + i) // function parameter type
-		if argT.ConvertibleTo(handlerArgT) {
+		paramT := handlerT.In(argOffset + i)  // function parameter type
+		paramK := paramT.Kind()
+		if !argV.IsValid() {
+			// arguments[i] is nil interface
+			switch paramK {
+			case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map,
+				reflect.Pointer, reflect.Slice:
+				ins[argOffset+i] = reflect.Zero(paramT)
+				continue
+			default:
+				return nil, fmt.Errorf(
+					"argument is nil, but parameter of type %v cannot be nil",
+					paramT,
+				)
+			}
+		}
+		argT, argK := argV.Type(), argV.Kind()
+		// Dereference paramT exactly once
+		// Later, we will convert the argument into an initialized pointer
+		paramPointer := paramK == reflect.Pointer
+		if paramPointer {
+			paramT = paramT.Elem()
+			paramK = paramT.Kind()
+		}
+		if argT.ConvertibleTo(paramT) {
 			// Convert arguments to the handler's argument types
-			ins[argOffset+i] = argV.Convert(handlerArgT)
-		} else if ka, kp := argT.Kind(), handlerArgT.Kind(); ka == reflect.Slice &&
-			kp == reflect.Slice &&
-			argT.Elem().ConvertibleTo(handlerArgT.Elem()) {
+			ins[argOffset+i] = argV.Convert(paramT)
+		} else if argK == reflect.Slice &&
+			paramK == reflect.Slice &&
+			argT.Elem().ConvertibleTo(paramT.Elem()) {
 			// If argV amd handlerArgT are slices, we can try to convert each
 			// element
 			ins[argOffset+i] = reflect.MakeSlice(
-				handlerArgT, argV.Len(), argV.Len(),
+				paramT, argV.Len(), argV.Len(),
 			)
 			for j := 0; j < argV.Len(); j++ {
-				ins[argOffset+i].Index(j).Set(argV.Index(j).Convert(handlerArgT.Elem()))
+				ins[argOffset+i].Index(j).Set(argV.Index(j).Convert(paramT.Elem()))
 			}
 		} else {
-			return nil, errors.New("argument type mismatch")
+			return nil, fmt.Errorf("argument type mismatch: %v cannot convert into %v", argT, paramT)
+		}
+		if paramPointer {
+			// Convert the argument into a pointer
+			ptr := reflect.New(paramT)
+			ptr.Elem().Set(ins[argOffset+i])
+			ins[argOffset+i] = ptr
 		}
 	}
 

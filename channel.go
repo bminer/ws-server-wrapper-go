@@ -33,11 +33,24 @@ type ClientChannel struct {
 // one or two values: a request result and an error. The request result is
 // optional and may be of any type, but the error is required and must implement
 // the error interface. When the event handler is called, the arguments of the
-// event are converted to the types expected by handler. If the types do not
-// match, the handler is not called and an error is returned to the client.
+// event are converted to the types expected by handler. If an argument is not
+// convertible to its parameter type (see reflect.Type.ConvertibleTo), the
+// handler is not called and an error is returned to the client; however, there
+// are some notable exceptions to this rule:
+//
+//   - if the argument is a `nil` interface type and the parameter is a type
+//     that can accept `nil`, then `nil` is supplied as the argument
+//
+//   - if the parameter is a pointer type, the address of the argument will be
+//     taken after type conversion
+//
+//   - if the argument and parameters are slices of convertible types, each
+//     element in the slice will be converted into a new slice and supplied as
+//     the argument
+//
 // Optionally, the handler can provide an additional parameter for the
-// context.Context of the request. Call ctx.Value(ClientKey) to return the
-// *wrapper.Client object for the client that emitted the event.
+// context.Context of the request. Call ClientFromContext(ctx) to return the
+// *Client object for the client that emitted the event.
 //
 // There are also reserved events can occur on the main channel of a client:
 //
