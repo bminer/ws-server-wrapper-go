@@ -15,6 +15,7 @@ type Message struct {
 	ResponseError   any    `json:"e,omitempty"`
 	ResponseJSError bool   `json:"_,omitempty"`
 	IgnoreIfFalse   *bool  `json:"ws-wrapper,omitempty"`
+	processed       chan struct{}
 }
 
 // EventName returns the name of the event or empty string if the message is
@@ -101,6 +102,13 @@ func (m Message) LogValue() slog.Value {
 		attrs = []slog.Attr{slog.Bool("invalid", true)}
 	}
 	return slog.GroupValue(attrs...)
+}
+
+// Processed returns a channel that is closed when the message is done being
+// processed. This can be used by a "message" handler to measure message
+// processing time.
+func (m Message) Processed() <-chan struct{} {
+	return m.processed
 }
 
 // messageResponse is a response to a message

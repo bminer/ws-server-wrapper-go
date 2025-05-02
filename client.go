@@ -229,12 +229,15 @@ func (c *Client) readMessages() {
 		}
 
 		// Emit only valid messages
+		msg.processed = make(chan struct{})
 		c.emitMessage(msg)
 
 		if msg.IgnoreIfFalse != nil && *msg.IgnoreIfFalse == false {
+			close(msg.processed)
 			continue // ignore message
 		}
 
+		// Note: handleMessage will close `msg.processed`
 		err = c.handleMessage(ctx, msg)
 		if err != nil {
 			// Emit error and close client
@@ -326,6 +329,7 @@ func (c *Client) handleMessage(ctx context.Context, msg Message) error {
 
 		// Handle missing handler
 		if handler == nil {
+			defer close(msg.processed)
 			err := fmt.Errorf(
 				"no event listener for '%s' on channel '%s'",
 				eventName, msg.Channel,
@@ -350,6 +354,7 @@ func (c *Client) handleMessage(ctx context.Context, msg Message) error {
 
 		// Call handler with arguments
 		go func() {
+			defer close(msg.processed)
 			result, err := callHandler(
 				handlerCtx, handler, msg.HandlerArguments(),
 			)
@@ -378,6 +383,7 @@ func (c *Client) handleMessage(ctx context.Context, msg Message) error {
 		}()
 		return nil
 	}
+	defer close(msg.processed)
 
 	// Try processing response to prior request
 	if msg.RequestID == nil {
