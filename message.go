@@ -1,38 +1,42 @@
 package wrapper
 
 import (
+	"encoding/json"
 	"errors"
 	"log/slog"
+	"strconv"
 )
 
 // Message is a ws-wrapper JSON-encoded message.
 // See https://github.com/bminer/ws-wrapper/blob/master/README.md#protocol
 type Message struct {
-	Channel         string `json:"c,omitempty"`
-	Arguments       []any  `json:"a,omitempty"` // Arguments[0] is the event name
-	RequestID       *int   `json:"i,omitempty"`
-	ResponseData    any    `json:"d,omitempty"`
-	ResponseError   any    `json:"e,omitempty"`
-	ResponseJSError bool   `json:"_,omitempty"`
-	IgnoreIfFalse   *bool  `json:"ws-wrapper,omitempty"`
+	Channel         string            `json:"c,omitempty"`
+	Arguments       []json.RawMessage `json:"a,omitempty"` // Arguments[0] is the event name
+	RequestID       *int              `json:"i,omitempty"`
+	ResponseData    any               `json:"d,omitempty"`
+	ResponseError   any               `json:"e,omitempty"`
+	ResponseJSError bool              `json:"_,omitempty"`
+	IgnoreIfFalse   *bool             `json:"ws-wrapper,omitempty"`
 	processed       chan struct{}
 }
 
 // EventName returns the name of the event or empty string if the message is
 // invalid
 func (m Message) EventName() string {
+	// Parse first argument
 	if len(m.Arguments) < 1 {
 		return ""
 	}
-	name, ok := m.Arguments[0].(string)
-	if !ok {
+	var name string
+	err := json.Unmarshal(m.Arguments[0], &name)
+	if err != nil {
 		return ""
 	}
 	return name
 }
 
 // HandlerArguments returns the arguments for the event handler
-func (m Message) HandlerArguments() []any {
+func (m Message) HandlerArguments() []json.RawMessage {
 	if len(m.Arguments) < 2 {
 		return nil
 	}
@@ -79,11 +83,25 @@ func (m Message) LogValue() slog.Value {
 
 	var attrs []slog.Attr
 	eventName := m.EventName()
+	const MaxArgLength = 1024
 	if eventName != "" {
 		attrs = []slog.Attr{
 			slog.String("ch", m.Channel),
 			slog.String("event", eventName),
-			slog.Any("args", m.HandlerArguments()),
+		}
+		for i, arg := range m.HandlerArguments() {
+			if len(arg) > MaxArgLength {
+				attrs = append(attrs,
+					slog.String(
+						"args["+strconv.Itoa(i)+"]",
+						string(arg[:MaxArgLength-14])+"...(truncated)",
+					),
+				)
+			} else {
+				attrs = append(attrs,
+					slog.String("args["+strconv.Itoa(i)+"]", string(arg)),
+				)
+			}
 		}
 	} else if m.RequestID != nil {
 		if m.ResponseError == nil {
