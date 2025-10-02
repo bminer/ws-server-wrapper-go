@@ -2,6 +2,7 @@ package wrapper
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -68,7 +69,7 @@ type CloseHandler = func(*Client, StatusCode, string)
 // return two values: the result and an error. This function returns the result
 // and error from the handler function.
 func callHandler(
-	ctx context.Context, handler any, arguments []any,
+	ctx context.Context, handler any, arguments []json.RawMessage,
 ) (res any, err error) {
 	handlerV := reflect.ValueOf(handler)
 	handlerT := handlerV.Type()
@@ -104,60 +105,19 @@ func callHandler(
 		)
 	}
 
-	// Convert arguments to a slice of reflect.Value
+	// Decode JSON arguments based on parameter type
 	ins := make([]reflect.Value, numIn)
 	if hasContext {
 		ins[0] = reflect.ValueOf(ctx)
 	}
 	for i := 0; i < len(arguments); i++ {
-		argV := reflect.ValueOf(arguments[i]) // argument reflect.Value
-		paramT := handlerT.In(argOffset + i)  // function parameter type
-		paramK := paramT.Kind()
-		if !argV.IsValid() {
-			// arguments[i] is nil interface
-			switch paramK {
-			case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map,
-				reflect.Pointer, reflect.Slice:
-				ins[argOffset+i] = reflect.Zero(paramT)
-				continue
-			default:
-				return nil, fmt.Errorf(
-					"argument is nil, but parameter of type %v cannot be nil",
-					paramT,
-				)
-			}
+		paramT := handlerT.In(argOffset + i) // function parameter type
+		argV := reflect.New(paramT)
+		err = json.Unmarshal(arguments[i], argV.Interface())
+		if err != nil {
+			return nil, err
 		}
-		argT, argK := argV.Type(), argV.Kind()
-		// Dereference paramT exactly once
-		// Later, we will convert the argument into an initialized pointer
-		paramPointer := paramK == reflect.Pointer
-		if paramPointer {
-			paramT = paramT.Elem()
-			paramK = paramT.Kind()
-		}
-		if argT.ConvertibleTo(paramT) {
-			// Convert arguments to the handler's argument types
-			ins[argOffset+i] = argV.Convert(paramT)
-		} else if argK == reflect.Slice &&
-			paramK == reflect.Slice &&
-			argT.Elem().ConvertibleTo(paramT.Elem()) {
-			// If argV amd handlerArgT are slices, we can try to convert each
-			// element
-			ins[argOffset+i] = reflect.MakeSlice(
-				paramT, argV.Len(), argV.Len(),
-			)
-			for j := 0; j < argV.Len(); j++ {
-				ins[argOffset+i].Index(j).Set(argV.Index(j).Convert(paramT.Elem()))
-			}
-		} else {
-			return nil, fmt.Errorf("argument type mismatch: %v cannot convert into %v", argT, paramT)
-		}
-		if paramPointer {
-			// Convert the argument into a pointer
-			ptr := reflect.New(paramT)
-			ptr.Elem().Set(ins[argOffset+i])
-			ins[argOffset+i] = ptr
-		}
+		ins[argOffset+i] = argV.Elem()
 	}
 
 	// Call the handler

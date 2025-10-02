@@ -39,7 +39,7 @@ func ExampleServer_echo() {
 }
 
 // Demonstrates how to add various event handlers.
-func ExampleServerChannelOn() {
+func ExampleServerChannel_On() {
 	wsServer := NewServer()
 
 	// Simple event handler that does not return a response
@@ -65,7 +65,7 @@ func ExampleServerChannelOn() {
 }
 
 // Demonstrates adding event handlers to a particular channel.
-func ExampleServerChannelOn_channel() {
+func ExampleServerChannel_On_channel() {
 	wsServer := NewServer()
 
 	// Adds a "readFile" event handler to the "io" channel.

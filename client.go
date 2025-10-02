@@ -2,6 +2,7 @@ package wrapper
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 )
@@ -141,9 +142,19 @@ func (c *Client) sendEvent(ctx context.Context, channel string, arguments ...any
 	if conn == nil {
 		return fmt.Errorf("connection is closed")
 	}
+	// Encode arguments as JSON
+	jsonArgs := make([]json.RawMessage, len(arguments))
+	for i, arg := range arguments {
+		buf, err := json.Marshal(arg)
+		if err != nil {
+			return err
+		}
+		jsonArgs[i] = buf
+	}
+	// Send event to client
 	return conn.WriteMessage(ctx, &Message{
 		Channel:   channel,
-		Arguments: arguments,
+		Arguments: jsonArgs,
 	})
 }
 
@@ -157,6 +168,16 @@ func (c *Client) sendRequest(
 	c.dataMu.Unlock()
 	if conn == nil {
 		return nil, fmt.Errorf("connection is closed")
+	}
+
+	// Encode arguments as JSON
+	jsonArgs := make([]json.RawMessage, len(arguments))
+	for i, arg := range arguments {
+		buf, err := json.Marshal(arg)
+		if err != nil {
+			return nil, err
+		}
+		jsonArgs[i] = buf
 	}
 
 	// Create channel for message response
@@ -178,7 +199,7 @@ func (c *Client) sendRequest(
 	// Send request to client
 	err := conn.WriteMessage(ctx, &Message{
 		Channel:   channel,
-		Arguments: arguments,
+		Arguments: jsonArgs,
 		RequestID: &requestID,
 	})
 	if err != nil {
