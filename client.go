@@ -253,7 +253,7 @@ func (c *Client) readMessages() {
 		msg.processed = make(chan struct{})
 		c.emitMessage(msg)
 
-		if msg.IgnoreIfFalse != nil && *msg.IgnoreIfFalse == false {
+		if msg.IgnoreIfFalse != nil && !*msg.IgnoreIfFalse {
 			close(msg.processed)
 			continue // ignore message
 		}
@@ -332,7 +332,7 @@ func (c *Client) handleMessage(ctx context.Context, msg Message) error {
 		if ok {
 			delete(c.handlersOnce, handlerID)
 		} else {
-			handler, ok = c.handlers[handlerID]
+			handler = c.handlers[handlerID]
 		}
 		c.handlersMu.Unlock()
 
@@ -343,7 +343,7 @@ func (c *Client) handleMessage(ctx context.Context, msg Message) error {
 			if ok {
 				delete(c.server.handlersOnce, handlerID)
 			} else {
-				handler, ok = c.server.handlers[handlerID]
+				handler = c.server.handlers[handlerID]
 			}
 			c.server.handlersMu.Unlock()
 		}

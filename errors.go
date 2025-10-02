@@ -6,6 +6,7 @@ type ClientError struct {
 	error  error
 }
 
+// Error returns the error message as a string
 func (ce ClientError) Error() string {
-	return ce.Error()
+	return ce.error.Error()
 }

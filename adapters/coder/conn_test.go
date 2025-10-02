@@ -32,7 +32,11 @@ func Example() {
 		}
 		// Attach the WebSocket connection to ws-server-wrapper and start
 		// listening for inbound messages.
-		wsServer.Accept(Wrap(conn))
+		err = wsServer.Accept(Wrap(conn))
+		if err != nil {
+			// wsServer.Accept already closes the conn
+			return
+		}
 	})
 
 	// Start the HTTP server

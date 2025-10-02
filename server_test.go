@@ -2,9 +2,9 @@ package wrapper
 
 import (
 	"fmt"
-	"io/ioutil"
 	"log"
 	"net/http"
+	"os"
 )
 
 // This example shows how to use create a ws-server-wrapper that echoes a string
@@ -60,7 +60,7 @@ func ExampleServerChannel_On() {
 	// Note: json.Marshall will return a base64 string to the client because
 	// `[]byte` is returned by the handler.
 	wsServer.On("readFile", func(filename string) ([]byte, error) {
-		return ioutil.ReadFile(filename)
+		return os.ReadFile(filename)
 	})
 }
 
@@ -70,6 +70,6 @@ func ExampleServerChannel_On_channel() {
 
 	// Adds a "readFile" event handler to the "io" channel.
 	wsServer.Of("io").On("readFile", func(filename string) ([]byte, error) {
-		return ioutil.ReadFile(filename)
+		return os.ReadFile(filename)
 	})
 }
