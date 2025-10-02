@@ -2,6 +2,7 @@ package wrapper
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"testing"
@@ -84,7 +85,7 @@ func TestCallHandler(t *testing.T) {
 					FloatSlice:  slice,
 				}, nil
 			},
-			Arguments: []any{[]float64{1.2, 2.7, 3, 4}},
+			Arguments: []any{[]float64{1, 2, 3, 4}},
 			Response: TestStruct{
 				StringSlice: []string{"hmm", "ok"},
 				FloatSlice:  []float64{1, 2, 3, 4},
@@ -93,7 +94,17 @@ func TestCallHandler(t *testing.T) {
 	}
 	for _, ht := range tests {
 		name := ht.Name
-		res, err := callHandler(ctx, ht.Handler, ht.Arguments)
+		jsonArgs := make([]json.RawMessage, len(ht.Arguments))
+		for i, arg := range ht.Arguments {
+			buf, err := json.Marshal(arg)
+			if err != nil {
+				t.Errorf(name+": JSON encoding error: %v", err)
+				continue
+			}
+			jsonArgs[i] = buf
+		}
+
+		res, err := callHandler(ctx, ht.Handler, jsonArgs)
 		if ht.Error != nil {
 			if err == nil {
 				t.Errorf(name+": expected error %v", ht.Error)

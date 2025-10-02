@@ -170,6 +170,16 @@ func (c *Client) sendRequest(
 		return nil, fmt.Errorf("connection is closed")
 	}
 
+	// Encode arguments as JSON
+	jsonArgs := make([]json.RawMessage, len(arguments))
+	for i, arg := range arguments {
+		buf, err := json.Marshal(arg)
+		if err != nil {
+			return nil, err
+		}
+		jsonArgs[i] = buf
+	}
+
 	// Create channel for message response
 	respCh := make(chan messageResponse, 1)
 
@@ -186,15 +196,6 @@ func (c *Client) sendRequest(
 		c.server.requestMu.Unlock()
 	}
 
-	// Encode arguments as JSON
-	jsonArgs := make([]json.RawMessage, len(arguments))
-	for i, arg := range arguments {
-		buf, err := json.Marshal(arg)
-		if err != nil {
-			return nil, err
-		}
-		jsonArgs[i] = buf
-	}
 	// Send request to client
 	err := conn.WriteMessage(ctx, &Message{
 		Channel:   channel,
