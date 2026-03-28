@@ -1,6 +1,7 @@
 package wrapper
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -16,6 +17,7 @@ type Message struct {
 	ResponseData    any               `json:"d,omitempty"`
 	ResponseError   any               `json:"e,omitempty"`
 	ResponseJSError bool              `json:"_,omitempty"`
+	CancelReason    any               `json:"x,omitempty"` // Request cancellation signal
 	IgnoreIfFalse   *bool             `json:"ws-wrapper,omitempty"`
 	processed       chan struct{}
 }
@@ -63,7 +65,8 @@ func (m Message) Response() (any, error) {
 		errMsg, ok := jsErr["message"].(string)
 		if !ok {
 			return nil, errors.New(
-				"response is a malformed JavaScript error: message key is not a string",
+				"response is a malformed JavaScript error: " +
+					"message key is not a string",
 			)
 		}
 		return nil, errors.New(errMsg)
@@ -74,6 +77,34 @@ func (m Message) Response() (any, error) {
 		return nil, errors.New("response error is not a string")
 	}
 	return nil, errors.New(errMsg)
+}
+
+// CancelCause returns the reason for this cancellation message as an error.
+// Returns context.Canceled if no reason is provided.
+func (m Message) CancelCause() error {
+	// Handle JavaScript error
+	if m.ResponseJSError {
+		jsErr, ok := m.CancelReason.(map[string]any)
+		if !ok {
+			return errors.New(
+				"cancel reason is a malformed JavaScript error: not an object",
+			)
+		}
+		errMsg, ok := jsErr["message"].(string)
+		if !ok {
+			return errors.New(
+				"cancel reason is a malformed JavaScript error: " +
+					"message key is not a string",
+			)
+		}
+		return errors.New(errMsg)
+	}
+	// Handle string error
+	errMsg, ok := m.CancelReason.(string)
+	if !ok {
+		return context.Canceled
+	}
+	return errors.New(errMsg)
 }
 
 func (m Message) LogValue() slog.Value {
@@ -104,11 +135,17 @@ func (m Message) LogValue() slog.Value {
 			}
 		}
 	} else if m.RequestID != nil {
-		if m.ResponseError == nil {
+		if m.CancelReason != nil {
+			attrs = []slog.Attr{
+				slog.Int("reqID", *m.RequestID),
+				slog.Any("cancelReason", m.CancelReason),
+				slog.Bool("jsError", m.ResponseJSError),
+			}
+		} else if m.ResponseError != nil {
 			attrs = []slog.Attr{
 				slog.Int("reqID", *m.RequestID),
 				slog.Any("error", m.ResponseError),
-				slog.Bool("js", m.ResponseJSError),
+				slog.Bool("jsError", m.ResponseJSError),
 			}
 		} else {
 			attrs = []slog.Attr{

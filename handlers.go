@@ -56,7 +56,7 @@ type HandlerContextFunc func(
 	ctx context.Context,
 	channel string,
 	eventName string,
-) (context.Context, context.CancelFunc)
+) context.Context
 
 // Type aliases for "reserved" event handlers
 type OpenHandler = func(*Client)

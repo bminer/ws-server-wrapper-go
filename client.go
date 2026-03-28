@@ -9,26 +9,29 @@ import (
 
 // Client represents a WebSocket client
 type Client struct {
-	ClientChannel                 // the "main" client channel with no name
-	ctx           context.Context // cancelled when the client is closed
-	ctxCancel     func(error)     // called when the client is closed
-	conn          Conn            // WebSocket connection; set to nil when closed
-	server        *Server
-	handlersMu    sync.Mutex
-	handlers      map[handlerName]any
-	handlersOnce  map[handlerName]any
-	dataMu        sync.Mutex
-	data          map[string]any
+	ClientChannel                    // the "main" client channel with no name
+	ctx              context.Context // cancelled when the client is closed
+	ctxCancel        func(error)     // called when the client is closed
+	conn             Conn            // WebSocket connection; set `nil` on close
+	server           *Server
+	handlersMu       sync.Mutex
+	handlers         map[handlerName]any
+	handlersOnce     map[handlerName]any
+	inboundCancelsMu sync.Mutex
+	inboundCancels   map[int]func(error) // cancel funcs for inbound requests
+	dataMu           sync.Mutex
+	data             map[string]any
 }
 
 func newClient(conn Conn, server *Server) *Client {
 	// Create client
 	c := &Client{
-		conn:         conn,
-		server:       server,
-		handlers:     make(map[handlerName]any),
-		handlersOnce: make(map[handlerName]any),
-		data:         make(map[string]any),
+		conn:           conn,
+		server:         server,
+		handlers:       make(map[handlerName]any),
+		handlersOnce:   make(map[handlerName]any),
+		inboundCancels: make(map[int]func(error)),
+		data:           make(map[string]any),
 	}
 
 	// Create a context that is cancelled when the client is closed and stores
@@ -320,6 +323,9 @@ func (c *Client) emitClose(status StatusCode, reason string) bool {
 // handleMessage processes an inbound message for this client. Returns an error
 // if there was an error sending the response to the client.
 func (c *Client) handleMessage(ctx context.Context, msg Message) error {
+	// We may create a request-specific cancellable context later
+	var cancel context.CancelCauseFunc
+	// Get message event name if any
 	eventName := msg.EventName()
 	if eventName != "" {
 		// Process inbound event/request
@@ -368,9 +374,17 @@ func (c *Client) handleMessage(ctx context.Context, msg Message) error {
 
 		// Wrap context for handler execution
 		handlerCtx := ctx
-		var cancel context.CancelFunc
 		if handlerCtxFunc != nil {
-			handlerCtx, cancel = handlerCtxFunc(ctx, msg.Channel, eventName)
+			handlerCtx = handlerCtxFunc(ctx, msg.Channel, eventName)
+		}
+		// For inbound requests, create a request-specific cancellable context
+		// to allow a protocol-level cancellation message to cancel the handler.
+		if msg.RequestID != nil {
+			handlerCtx, cancel = context.WithCancelCause(handlerCtx)
+			// Save the CancelCauseFunc for the request
+			c.inboundCancelsMu.Lock()
+			c.inboundCancels[*msg.RequestID] = cancel
+			c.inboundCancelsMu.Unlock()
 		}
 
 		// Call handler with arguments
@@ -379,14 +393,21 @@ func (c *Client) handleMessage(ctx context.Context, msg Message) error {
 			result, err := callHandler(
 				handlerCtx, handler, msg.HandlerArguments(),
 			)
+			// We are done running the handler, so cancel the handler context
 			if cancel != nil {
-				cancel()
+				cancel(context.Canceled)
 			}
 
 			if msg.RequestID == nil {
 				// Silently ignore the response if it's not a request
 				return
 			}
+
+			// Clean up inbound cancellation
+			c.inboundCancelsMu.Lock()
+			delete(c.inboundCancels, *msg.RequestID)
+			c.inboundCancelsMu.Unlock()
+
 			if err != nil {
 				// Send error response
 				err = c.sendReject(ctx, msg.RequestID, err)
@@ -409,6 +430,20 @@ func (c *Client) handleMessage(ctx context.Context, msg Message) error {
 	// Try processing response to prior request
 	if msg.RequestID == nil {
 		return nil // ignore message with invalid request ID
+	}
+
+	// Handle request cancellation message (ws-wrapper v4)
+	if msg.CancelReason != nil {
+		c.inboundCancelsMu.Lock()
+		cancel, ok := c.inboundCancels[*msg.RequestID]
+		if ok {
+			delete(c.inboundCancels, *msg.RequestID)
+		}
+		c.inboundCancelsMu.Unlock()
+		if ok {
+			cancel(msg.CancelCause())
+		}
+		return nil
 	}
 
 	// Get request handler
