@@ -82,6 +82,9 @@ func (m Message) Response() (any, error) {
 // CancelCause returns the reason for this cancellation message as an error.
 // Returns context.Canceled if no reason is provided.
 func (m Message) CancelCause() error {
+	if m.RequestID == nil || m.CancelReason == nil {
+		return errors.New("message is not a cancellation")
+	}
 	// Handle JavaScript error
 	if m.ResponseJSError {
 		jsErr, ok := m.CancelReason.(map[string]any)
