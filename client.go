@@ -234,6 +234,10 @@ func (c *Client) readMessages() {
 	conn := c.conn
 	ctx := c.ctx
 	c.dataMu.Unlock()
+	if conn == nil {
+		// Connection was closed before readMessages had a chance to start.
+		return
+	}
 	for {
 		var msg Message
 		err := conn.ReadMessage(ctx, &msg)
