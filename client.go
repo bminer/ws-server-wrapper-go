@@ -115,8 +115,12 @@ func (c *Client) sendReject(ctx context.Context, requestID *int, err error) erro
 		return nil // ignore message if connection is closed
 	}
 	return conn.WriteMessage(ctx, &Message{
-		RequestID:     requestID,
-		ResponseError: err.Error(),
+		RequestID: requestID,
+		// Write as JS error
+		ResponseJSError: true,
+		ResponseError: map[string]any{
+			"message": err.Error(),
+		},
 	})
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -250,8 +251,14 @@ func TestHandlerReturnsError(t *testing.T) {
 	if resp.ResponseError == nil {
 		t.Fatal("expected error response, got none")
 	}
-	if resp.ResponseError != "handler failed" {
-		t.Fatalf("expected 'handler failed', got %v", resp.ResponseError)
+	// Expect error to be encoded as JS Error
+	if !resp.ResponseJSError {
+		t.Fatal("expected error encoded as JS error")
+	}
+	if exp := map[string]any{
+		"message": "handler failed",
+	}; !reflect.DeepEqual(exp, resp.ResponseError) {
+		t.Fatalf("expected %v, got %v", exp, resp.ResponseError)
 	}
 
 	conn.Close(StatusNormalClosure, "done")
@@ -317,6 +324,9 @@ func TestMissingHandlerReturnsError(t *testing.T) {
 	if resp.ResponseError == nil {
 		t.Fatal("expected error response, got none")
 	}
+	if !resp.ResponseJSError {
+		t.Fatal("expected error encoded as JS error")
+	}
 
 	conn.Close(StatusNormalClosure, "done")
 }
@@ -375,6 +385,9 @@ func TestOnceHandler(t *testing.T) {
 	}
 	if resp2.ResponseError == nil {
 		t.Fatal("expected error for req2, got none")
+	}
+	if !resp2.ResponseJSError {
+		t.Fatal("expected error encoded as JS error")
 	}
 
 	if callCount != 1 {
