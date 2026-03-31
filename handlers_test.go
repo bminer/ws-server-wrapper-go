@@ -91,6 +91,52 @@ func TestCallHandler(t *testing.T) {
 				FloatSlice:  []float64{1, 2, 3, 4},
 			},
 		},
+		{
+			Name:      "Non-function handler",
+			Handler:   "not a function",
+			Arguments: []any{},
+			Error:     fmt.Errorf("handler is not a function"),
+		},
+		{
+			Name: "Wrong number of arguments",
+			Handler: func(s string, i int) (string, error) {
+				return s, nil
+			},
+			Arguments: []any{"string"},
+			Error:     fmt.Errorf("incorrect number of arguments"),
+		},
+		{
+			Name: "Too many return values",
+			Handler: func(s string) (string, string, error) {
+				return s, s, nil
+			},
+			Arguments: []any{"string"},
+			Error:     fmt.Errorf("handler should return one or two values"),
+		},
+		{
+			Name: "Last return type does not implement error",
+			Handler: func(s string) (string, string) {
+				return s, s
+			},
+			Arguments: []any{"string"},
+			Error:     fmt.Errorf("handler's last output type must implement error"),
+		},
+		{
+			Name: "Handler returning only error (nil)",
+			Handler: func(s string) error {
+				return nil
+			},
+			Arguments: []any{"string"},
+			Response:  nil,
+		},
+		{
+			Name: "Handler returning only error (non-nil)",
+			Handler: func(s string) error {
+				return fmt.Errorf("just an error")
+			},
+			Arguments: []any{"string"},
+			Error:     fmt.Errorf("just an error"),
+		},
 	}
 	for _, ht := range tests {
 		name := ht.Name
@@ -119,4 +165,80 @@ func TestCallHandler(t *testing.T) {
 		}
 	}
 	// handler :=
+}
+
+// TestIsReservedEvent verifies that reserved event names are correctly
+// identified and non-reserved names are not.
+func TestIsReservedEvent(t *testing.T) {
+	reserved := []string{
+		EventOpen, EventConnect, EventError, EventMessage, EventClose, EventDisconnect,
+	}
+	for _, name := range reserved {
+		if !IsReservedEvent(name) {
+			t.Errorf("expected %q to be a reserved event", name)
+		}
+	}
+	for _, name := range []string{"custom", "echo", "ping", ""} {
+		if IsReservedEvent(name) {
+			t.Errorf("expected %q to not be a reserved event", name)
+		}
+	}
+}
+
+// TestCheckHandler verifies that checkHandler accepts valid handler signatures
+// and rejects invalid ones.
+func TestCheckHandler(t *testing.T) {
+	// Valid: nil handler (removes the handler)
+	var h any = nil
+	if err := checkHandler("", "custom", h); err != nil {
+		t.Errorf("unexpected error for nil handler: %v", err)
+	}
+
+	// Valid: normal event handler returning (result, error)
+	h = func(s string) (string, error) { return s, nil }
+	if err := checkHandler("", "custom", h); err != nil {
+		t.Errorf("unexpected error for valid handler: %v", err)
+	}
+
+	// Valid: reserved "open" handler
+	h = func(*Client) {}
+	if err := checkHandler("", EventOpen, h); err != nil {
+		t.Errorf("unexpected error for valid open handler: %v", err)
+	}
+
+	// Valid: reserved "error" handler
+	h = func(*Client, error) {}
+	if err := checkHandler("", EventError, h); err != nil {
+		t.Errorf("unexpected error for valid error handler: %v", err)
+	}
+
+	// Valid: reserved "close" handler
+	h = func(*Client, StatusCode, string) {}
+	if err := checkHandler("", EventClose, h); err != nil {
+		t.Errorf("unexpected error for valid close handler: %v", err)
+	}
+
+	// Invalid: reserved "open" handler with wrong signature
+	h = func(s string) {}
+	if err := checkHandler("", EventOpen, h); err == nil {
+		t.Error("expected error for open handler with wrong signature")
+	}
+
+	// Invalid: non-function handler
+	h = "not a function"
+	if err := checkHandler("", "custom", h); err == nil {
+		t.Error("expected error for non-function handler")
+	}
+
+	// Invalid: handler with no return values
+	h = func() {}
+	if err := checkHandler("", "custom", h); err == nil {
+		t.Error("expected error for handler with no return values")
+	}
+
+	// Invalid: handler whose last return type does not implement error
+	h = func() (string, string) { return "", "" }
+	if err := checkHandler("", "custom", h); err == nil {
+		t.Error("expected error for handler with wrong return type")
+	}
 }
