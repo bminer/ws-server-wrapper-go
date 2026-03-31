@@ -4,9 +4,26 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strconv"
 )
+
+// weakBool is a boolean value that can be unmarshalled from a JSON boolean
+// or integer (where 0 = false and 1 = true).
+type weakBool bool
+
+func (bit *weakBool) UnmarshalJSON(data []byte) error {
+	asString := string(data)
+	if asString == "1" || asString == "true" {
+		*bit = true
+	} else if asString == "0" || asString == "false" {
+		*bit = false
+	} else {
+		return fmt.Errorf("invalid value for boolean: %s", asString)
+	}
+	return nil
+}
 
 // Message is a ws-wrapper JSON-encoded message.
 // See https://github.com/bminer/ws-wrapper/blob/master/README.md#protocol
@@ -16,9 +33,9 @@ type Message struct {
 	RequestID       *int              `json:"i,omitempty"`
 	ResponseData    any               `json:"d,omitempty"`
 	ResponseError   any               `json:"e,omitempty"`
-	ResponseJSError bool              `json:"_,omitempty"`
+	ResponseJSError weakBool          `json:"_,omitempty"`
 	CancelReason    any               `json:"x,omitempty"` // Request cancellation signal
-	IgnoreIfFalse   *bool             `json:"ws-wrapper,omitempty"`
+	IgnoreIfFalse   *weakBool         `json:"ws-wrapper,omitempty"`
 	processed       chan struct{}
 }
 
@@ -137,18 +154,21 @@ func (m Message) LogValue() slog.Value {
 				)
 			}
 		}
+		if m.RequestID != nil {
+			attrs = append(attrs, slog.Int("reqID", *m.RequestID))
+		}
 	} else if m.RequestID != nil {
 		if m.CancelReason != nil {
 			attrs = []slog.Attr{
 				slog.Int("reqID", *m.RequestID),
 				slog.Any("cancelReason", m.CancelReason),
-				slog.Bool("jsError", m.ResponseJSError),
+				slog.Bool("jsError", bool(m.ResponseJSError)),
 			}
 		} else if m.ResponseError != nil {
 			attrs = []slog.Attr{
 				slog.Int("reqID", *m.RequestID),
 				slog.Any("error", m.ResponseError),
-				slog.Bool("jsError", m.ResponseJSError),
+				slog.Bool("jsError", bool(m.ResponseJSError)),
 			}
 		} else {
 			attrs = []slog.Attr{

@@ -234,3 +234,69 @@ func TestMessageCancelCause(t *testing.T) {
 		}
 	})
 }
+
+func TestResponseJSErrorUnmarshal(t *testing.T) {
+	// When "_" is 1 it should parse as true
+	var m Message
+	enc := []byte(`{"i":1,"e":{"message":"js err"},"_":1}`)
+	if err := json.Unmarshal(enc, &m); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+	if !m.ResponseJSError {
+		t.Error("expected ResponseJSError true for _=1")
+	}
+
+	// When "_" is 0 it should parse as false
+	m = Message{}
+	enc = []byte(`{"i":1,"d":"ok","_":0}`)
+	if err := json.Unmarshal(enc, &m); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+	if m.ResponseJSError {
+		t.Error("expected ResponseJSError false for _=0")
+	}
+
+	// When "_" is boolean true/false it also works
+	m = Message{}
+	enc = []byte(`{"i":1,"e":{"message":"js err"},"_":true}`)
+	if err := json.Unmarshal(enc, &m); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+	if !m.ResponseJSError {
+		t.Error("expected ResponseJSError true for _=true")
+	}
+
+	m = Message{}
+	enc = []byte(`{"i":1,"e":"some error string","_":false}`)
+	if err := json.Unmarshal(enc, &m); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+	if m.ResponseJSError {
+		t.Error("expected ResponseJSError false for _=false")
+	}
+	res, err := m.Response()
+	if res != nil {
+		t.Error("expected no response data")
+	}
+	if exp := "some error string"; err == nil || err.Error() != exp {
+		t.Errorf("expected error '%v', got '%v'", exp, err)
+	}
+
+	// When "_" is falsy but `e` is an object we cannot parse
+	m = Message{}
+	enc = []byte(`{"i":1,"e":{"message":"js err"},"d":"poop"}`)
+	if err := json.Unmarshal(enc, &m); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+	if m.ResponseJSError {
+		t.Error("expected ResponseJSError to be false")
+	}
+	res, err = m.Response()
+	// We ignore `d`; still interpret as an error
+	if res != nil {
+		t.Error("expected no response data")
+	}
+	if exp := "response error is not a string"; err == nil || err.Error() != exp {
+		t.Errorf("expected error '%v', got '%v'", exp, err)
+	}
+}
