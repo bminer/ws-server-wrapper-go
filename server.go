@@ -46,13 +46,14 @@ func (s *Server) Accept(conn Conn) error {
 	}
 
 	// Add client to the set
-	client := newClient(conn, s)
+	client := NewClient(nil)
+	client.server = s
 	s.clients[client] = struct{}{}
 	s.clientsMu.Unlock()
 
-	// Run "open" event handlers before reading messages
-	s.emitOpen(client)
-	go client.readMessages()
+	// Finally, bind the connection to the client
+	// This emits the "open" event and starts reading inbound messages
+	client.Bind(conn)
 	return nil
 }
 

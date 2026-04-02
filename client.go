@@ -3,9 +3,15 @@ package wrapper
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 )
+
+// errRebound is the context cancellation cause set by Bind when it attaches a
+// new connection. readMessages detects it to exit silently instead of treating
+// the context cancellation as a real connection error.
+var errRebound = errors.New("client bound to new connection")
 
 // Client represents a WebSocket client
 type Client struct {
@@ -26,18 +32,72 @@ type Client struct {
 	server            *Server // server associated with the Client
 }
 
-func newClient(conn Conn, server *Server) *Client {
+// NewClient creates a new Client not associated with any Server. Register
+// event handlers on the returned Client, then call Client.Bind to attach a
+// WebSocket connection and begin processing messages.
+//
+// An optional conn may be provided; if non-nil it is passed to Bind
+// immediately so the one-liner form works:
+//
+//	client := wrapper.NewClient(coder.Wrap(wsConn))
+//
+// When conn is omitted, register your event handlers first and then call Bind
+// to guarantee no inbound message can arrives before handler registration.
+//
+//	client := wrapper.NewClient(nil)
+//	client.On("open", func(c *wrapper.Client) { /* ... */ })
+//	client.On("news", func(headline string) error { /* ... */ return nil })
+//	client.Bind(coder.Wrap(websocket.Dial(ctx, "ws://example.com/ws", nil)))
+func NewClient(conn Conn) *Client {
 	// Create client
 	c := &Client{
-		// ClientChannel, ctx, and ctxCancel are set below
-		conn:              conn,
+		// ClientChannel is set below
+		// ctx, ctxCancel, and conn are assigned in Bind method
 		requestResponseCh: make(map[int]chan messageResponse),
 		inboundCancels:    make(map[int]func(error)),
 		handlers:          make(map[handlerName]any),
 		handlersOnce:      make(map[handlerName]any),
 		data:              make(map[string]any),
-		server:            server,
+		// server is set only by Server.Accept
 	}
+	// Set channel reference back to client, so channel methods work properly
+	c.ClientChannel.client = c
+
+	// Optionally bind the connection
+	if conn != nil {
+		c.Bind(conn)
+	}
+	return c
+}
+
+// Bind attaches conn to the Client and starts reading inbound messages. It can
+// be called on a freshly created Client to establish the initial connection or
+// called again after a disconnect to reconnect; all registered event handlers
+// are preserved across calls.
+//
+// If the Client already has an active connection, it is closed with
+// StatusGoingAway before the new connection is attached, and any pending
+// outbound requests are cancelled.
+//
+// Bind fires the "open"/"connect" event handlers synchronously before
+// returning. This guarantees that any handlers registered inside the "open"
+// callback are registered before any inbound messages are processed.
+func (c *Client) Bind(conn Conn) {
+	c.connReqMu.Lock()
+	oldConn := c.conn
+	c.conn = conn
+	// Cancel the old context, so the old readMessages goroutine exits silently.
+	if c.ctxCancel != nil {
+		c.ctxCancel(errRebound)
+	}
+
+	// Abort any pending outbound requests; their responses will never arrive
+	// on the new connection.
+	for _, respCh := range c.requestResponseCh {
+		respCh <- messageResponse{nil, errRebound}
+		close(respCh)
+	}
+	clear(c.requestResponseCh)
 
 	// Create a context that is cancelled when the connection is closed.
 	// I know it is generally frowned upon to store the Context in a struct, but
@@ -48,10 +108,20 @@ func newClient(conn Conn, server *Server) *Client {
 	// a bit wasteful.
 	c.ctx, c.ctxCancel = context.WithCancelCause(context.Background())
 	c.ctx = context.WithValue(c.ctx, ClientKey, c)
+	c.connReqMu.Unlock()
 
-	// set reference back to client, so channel methods work properly
-	c.ClientChannel.client = c
-	return c
+	if oldConn != nil {
+		_ = oldConn.Close(StatusGoingAway, errRebound.Error())
+	}
+
+	// Fire "open" handlers synchronously before launching readMessages so that
+	// any handlers registered inside the "open" callback are in place before
+	// the first inbound message can arrive.
+	c.emitOpen()
+	if c.server != nil {
+		c.server.emitOpen(c)
+	}
+	go c.readMessages()
 }
 
 // Close closes the client connection and removes it from the list of clients
@@ -259,8 +329,12 @@ func (c *Client) readMessages() {
 	for {
 		var msg Message
 		err := conn.ReadMessage(ctx, &msg)
-		if err != nil {
-			// Emit error and close client
+		// If the context is cancelled
+		if ctx.Err() != nil {
+			// Connection was lost; exit silently
+			return
+		} else if err != nil {
+			// Emit error and close connection
 			err = fmt.Errorf("read message: %w", err)
 			c.emitError(err)
 			if c.server != nil {
@@ -268,12 +342,6 @@ func (c *Client) readMessages() {
 			}
 			c.Close(StatusInternalError, err.Error())
 			return
-		}
-
-		select {
-		case <-ctx.Done():
-			return // client closed
-		default:
 		}
 
 		// Emit only valid messages
@@ -287,8 +355,11 @@ func (c *Client) readMessages() {
 
 		// Note: handleMessage will close `msg.processed`
 		err = c.handleMessage(ctx, msg)
-		if err != nil {
-			// Emit error and close client
+		if ctx.Err() != nil {
+			// Connection was lost; exit silently
+			return
+		} else if err != nil {
+			// Emit error and close connection
 			err = fmt.Errorf("handle message: %w", err)
 			c.emitError(err)
 			if c.server != nil {
@@ -298,6 +369,22 @@ func (c *Client) readMessages() {
 			return
 		}
 	}
+}
+
+// emitOpen fires the "open" and "connect" event handlers registered on the
+// Client itself.
+func (c *Client) emitOpen() bool {
+	return emitReserved(
+		func(f any) bool {
+			if f, ok := f.(OpenHandler); ok {
+				f(c)
+				return true
+			}
+			return false
+		},
+		&c.handlersMu, c.handlers, c.handlersOnce,
+		"open", "connect",
+	)
 }
 
 // emitError calls the "error" event handler on the main channel

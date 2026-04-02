@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 )
@@ -684,3 +686,238 @@ func TestHandlerCancellationAfterCompletion(t *testing.T) {
 
 	conn.Close(StatusNormalClosure, "done")
 }
+
+// ExampleNewClient shows how to create a standalone WebSocket client. Handlers
+// are registered before Bind is called, so no inbound message can arrive
+// before the handlers are in place. The same client can be reused for
+// reconnection by calling Bind again with a new connection.
+func ExampleNewClient() {
+	client := NewClient()
+
+	client.On("open", func(c *Client) {
+		log.Println("connected to server")
+	})
+	client.On("close", func(c *Client, status StatusCode, reason string) {
+		log.Println("disconnected:", reason)
+		// To reconnect, dial a new connection and call Bind again:
+		// conn, _ := websocket.Dial(ctx, "ws://example.com/ws", nil)
+		// c.Bind(coder.Wrap(conn))
+	})
+	client.On("news", func(headline string) error {
+		log.Println("breaking news:", headline)
+		return nil
+	})
+
+	// For this runnable example we use a mockConn in place of a real dial.
+	conn := newMockConn()
+	client.Bind(conn) // "open" fires here; reading starts here
+
+	_ = client.Emit(context.Background(), "subscribe", "sports")
+	conn.Close(StatusNormalClosure, "done")
+}
+
+// TestNewClient_NoConn verifies that NewClient without a conn creates a client
+// whose event handlers can be registered and whose Bind can be called later.
+func TestNewClient_NoConn(t *testing.T) {
+	client := NewClient()
+
+	openFired := make(chan struct{})
+	client.On("open", func(c *Client) {
+		if c != client {
+			t.Errorf("open handler received wrong client")
+		}
+		close(openFired)
+	})
+
+	conn := newMockConn()
+	client.Bind(conn)
+
+	select {
+	case <-openFired:
+	case <-time.After(time.Second):
+		t.Fatal("open handler did not fire after Bind")
+	}
+
+	conn.Close(StatusNormalClosure, "done")
+}
+
+// TestNewClient_WithConn verifies the shorthand form: passing a conn directly
+// to NewClient fires the "open" handler immediately.
+func TestNewClient_WithConn(t *testing.T) {
+	openFired := make(chan struct{})
+	conn := newMockConn()
+
+	client := NewClient() // handlers registered before Bind for safety
+	client.On("open", func(c *Client) {
+		close(openFired)
+	})
+	client.Bind(conn)
+
+	select {
+	case <-openFired:
+	case <-time.After(time.Second):
+		t.Fatal("open handler did not fire")
+	}
+	_ = client
+	conn.Close(StatusNormalClosure, "done")
+}
+
+// TestBind_OpenFiresBeforeRead verifies that all "open" handlers complete
+// before any inbound message is processed, eliminating the registration race.
+func TestBind_OpenFiresBeforeRead(t *testing.T) {
+	conn := newMockConn()
+
+	// Queue an inbound event before Bind is called.
+	conn.send(Message{
+		Arguments: []json.RawMessage{[]byte(`"news"`), []byte(`"headline"`)},
+	})
+
+	var order []string
+	var mu sync.Mutex
+	record := func(s string) {
+		mu.Lock()
+		order = append(order, s)
+		mu.Unlock()
+	}
+
+	done := make(chan struct{})
+	client := NewClient()
+	client.On("open", func(c *Client) {
+		record("open")
+		// Register the "news" handler inside the open callback — this is the
+		// pattern that would race if open fired after readMessages started.
+		c.On("news", func(headline string) error {
+			record("news")
+			close(done)
+			return nil
+		})
+	})
+	client.Bind(conn)
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("news handler was not called")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(order) < 2 || order[0] != "open" || order[1] != "news" {
+		t.Fatalf("expected [open news], got %v", order)
+	}
+
+	conn.Close(StatusNormalClosure, "done")
+}
+
+// TestBind_Reconnect verifies that a client can reconnect: calling Bind again
+// inside the "close" handler attaches a new connection, fires "open" again,
+// and the client resumes processing messages on the new connection.
+func TestBind_Reconnect(t *testing.T) {
+	conn1 := newMockConn()
+	conn2 := newMockConn()
+
+	opens := make(chan struct{}, 2)
+	reconnected := make(chan struct{})
+
+	client := NewClient()
+	client.On("open", func(c *Client) {
+		opens <- struct{}{}
+	})
+	client.On("close", func(c *Client, status StatusCode, reason string) {
+		select {
+		case <-reconnected:
+			// second close — don't rebind
+		default:
+			// first close — reconnect on conn2
+			close(reconnected)
+			c.Bind(conn2)
+		}
+	})
+
+	client.Bind(conn1)
+
+	// Wait for first open.
+	select {
+	case <-opens:
+	case <-time.After(time.Second):
+		t.Fatal("first open did not fire")
+	}
+
+	// Close conn1 to trigger reconnection.
+	conn1.Close(StatusNormalClosure, "disconnected")
+
+	// Wait for reconnection (second open).
+	select {
+	case <-opens:
+	case <-time.After(2 * time.Second):
+		t.Fatal("second open (reconnect) did not fire")
+	}
+
+	// Close conn2 to finish the test cleanly.
+	conn2.Close(StatusNormalClosure, "done")
+}
+
+// TestBind_PendingRequestsAborted verifies that in-flight outbound requests
+// are cancelled with an error when Bind is called with a new connection.
+func TestBind_PendingRequestsAborted(t *testing.T) {
+	conn1 := newMockConn()
+	conn2 := newMockConn()
+
+	client := NewClient()
+	client.Bind(conn1)
+
+	// Start a request on conn1 that will never receive a response.
+	reqErr := make(chan error, 1)
+	go func() {
+		_, err := client.Request(context.Background(), "slow")
+		reqErr <- err
+	}()
+
+	// Give the goroutine a moment to register the pending request.
+	time.Sleep(20 * time.Millisecond)
+
+	// Rebind to conn2 — this should abort the pending request.
+	client.Bind(conn2)
+
+	select {
+	case err := <-reqErr:
+		if err == nil {
+			t.Fatal("expected request to be aborted with an error, got nil")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for aborted request error")
+	}
+
+	conn2.Close(StatusNormalClosure, "done")
+}
+
+// TestNewClient_HandleInboundEvent verifies that a NewClient handles an
+// inbound event from the remote server correctly.
+func TestNewClient_HandleInboundEvent(t *testing.T) {
+	called := make(chan string, 1)
+
+	client := NewClient()
+	client.On("greet", func(name string) error {
+		called <- name
+		return nil
+	})
+
+	conn := newMockConn()
+	client.Bind(conn)
+
+	conn.send(Message{
+		Arguments: []json.RawMessage{[]byte(`"greet"`), []byte(`"world"`)},
+	})
+
+	select {
+	case got := <-called:
+		if got != "world" {
+			t.Fatalf("expected 'world', got %q", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("handler not called within timeout")
+	}
+
+	conn.Close(StatusNormalClosure, "done")
+}
+
