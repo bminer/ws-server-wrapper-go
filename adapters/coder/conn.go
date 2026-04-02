@@ -12,8 +12,9 @@ import (
 	"github.com/coder/websocket/wsjson"
 )
 
-// Wrap wraps a websocket.Conn from github.com/coder/websocket as a wrapper.Conn
-// that can be passed to the wrapper.Server.Accept method.
+// Wrap wraps a *websocket.Conn from github.com/coder/websocket as a
+// wrapper.Conn that can be passed to wrapper.Server.Accept or
+// wrapper.Client.Bind.
 func Wrap(c *websocket.Conn) wrapper.Conn {
 	return conn{c}
 }
