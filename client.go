@@ -9,43 +9,45 @@ import (
 
 // Client represents a WebSocket client
 type Client struct {
-	ClientChannel                    // the "main" client channel with no name
-	ctx              context.Context // cancelled when the client is closed
-	ctxCancel        func(error)     // called when the client is closed
-	conn             Conn            // WebSocket connection; set `nil` on close
-	server           *Server
-	handlersMu       sync.Mutex
-	handlers         map[handlerName]any
-	handlersOnce     map[handlerName]any
-	inboundCancelsMu sync.Mutex
-	inboundCancels   map[int]func(error) // cancel funcs for inbound requests
-	dataMu           sync.Mutex
-	data             map[string]any
+	ClientChannel                     // the "main" client channel with no name
+	connReqMu         sync.Mutex      // protects Context, Conn, and request stuff
+	ctx               context.Context // cancelled when the connection is closed
+	ctxCancel         func(error)     // called when the connection is closed
+	conn              Conn            // WebSocket connection; set `nil` on close
+	requestID         int             // auto-incrementing request ID
+	requestResponseCh map[int]chan messageResponse
+	inboundCancelsMu  sync.Mutex
+	inboundCancels    map[int]func(error) // cancel funcs for inbound requests
+	handlersMu        sync.Mutex
+	handlers          map[handlerName]any
+	handlersOnce      map[handlerName]any
+	dataMu            sync.Mutex
+	data              map[string]any
+	server            *Server // server associated with the Client
 }
 
 func newClient(conn Conn, server *Server) *Client {
 	// Create client
 	c := &Client{
-		conn:           conn,
-		server:         server,
-		handlers:       make(map[handlerName]any),
-		handlersOnce:   make(map[handlerName]any),
-		inboundCancels: make(map[int]func(error)),
-		data:           make(map[string]any),
+		// ClientChannel, ctx, and ctxCancel are set below
+		conn:              conn,
+		requestResponseCh: make(map[int]chan messageResponse),
+		inboundCancels:    make(map[int]func(error)),
+		handlers:          make(map[handlerName]any),
+		handlersOnce:      make(map[handlerName]any),
+		data:              make(map[string]any),
+		server:            server,
 	}
 
-	// Create a context that is cancelled when the client is closed and stores
-	// the client itself.
-	ctxClient, cancel := context.WithCancelCause(context.Background())
-	ctxClient = context.WithValue(ctxClient, ClientKey, c)
+	// Create a context that is cancelled when the connection is closed.
 	// I know it is generally frowned upon to store the Context in a struct, but
 	// we are using it as a signal to cancel readMessages and for request
 	// cancellation. I also feel like this approach is slightly better than
 	// using a channel; previously a goroutine per client was created simply to
 	// read from a close channel and cancel the readMessages Context. It feels
 	// a bit wasteful.
-	c.ctx = ctxClient
-	c.ctxCancel = cancel
+	c.ctx, c.ctxCancel = context.WithCancelCause(context.Background())
+	c.ctx = context.WithValue(c.ctx, ClientKey, c)
 
 	// set reference back to client, so channel methods work properly
 	c.ClientChannel.client = c
@@ -64,16 +66,24 @@ func (c *Client) Close(status StatusCode, reason string) error {
 // closeWithoutLock closes the client connection without locking the server's
 // clientsMu lock. This is used when the server is closing all clients.
 func (c *Client) closeWithoutLock(status StatusCode, reason string) error {
-	c.ctxCancel(fmt.Errorf("client closed (status: %v)", status))
-	// Clear c.conn to indicate connection is closed
-	c.dataMu.Lock()
-	if c.conn == nil {
-		// Connection already closed
+	c.connReqMu.Lock()
+	conn := c.conn
+	if conn == nil {
+		c.connReqMu.Unlock()
+		// Connection was already closed
 		return nil
 	}
-	conn := c.conn
+	// Clear c.conn to indicate connection is closed
+	c.ctxCancel(fmt.Errorf("client closed (status: %v)", status))
 	c.conn = nil
-	c.dataMu.Unlock()
+	// Abort all pending outbound requests for this client.
+	for _, respCh := range c.requestResponseCh {
+		respCh <- messageResponse{nil, fmt.Errorf("connection closed")}
+		close(respCh)
+	}
+	clear(c.requestResponseCh)
+	c.connReqMu.Unlock()
+	// Emit "close" events and close the connection
 	c.emitClose(status, reason)
 	c.server.emitClose(c, status, reason)
 	return conn.Close(status, reason)
@@ -108,9 +118,9 @@ func (c *Client) sendReject(ctx context.Context, requestID *int, err error) erro
 	} else if err == nil {
 		return fmt.Errorf("error is required")
 	}
-	c.dataMu.Lock()
+	c.connReqMu.Lock()
 	conn := c.conn
-	c.dataMu.Unlock()
+	c.connReqMu.Unlock()
 	if conn == nil {
 		return nil // ignore message if connection is closed
 	}
@@ -129,9 +139,9 @@ func (c *Client) sendResolve(ctx context.Context, requestID *int, data any) erro
 	if requestID == nil {
 		return fmt.Errorf("requestID is required")
 	}
-	c.dataMu.Lock()
+	c.connReqMu.Lock()
 	conn := c.conn
-	c.dataMu.Unlock()
+	c.connReqMu.Unlock()
 	if conn == nil {
 		return nil // ignore message if connection is closed
 	}
@@ -143,9 +153,9 @@ func (c *Client) sendResolve(ctx context.Context, requestID *int, data any) erro
 
 // sendEvent sends an event to the client
 func (c *Client) sendEvent(ctx context.Context, channel string, arguments ...any) error {
-	c.dataMu.Lock()
+	c.connReqMu.Lock()
 	conn := c.conn
-	c.dataMu.Unlock()
+	c.connReqMu.Unlock()
 	if conn == nil {
 		return fmt.Errorf("connection is closed")
 	}
@@ -169,10 +179,10 @@ func (c *Client) sendEvent(ctx context.Context, channel string, arguments ...any
 func (c *Client) sendRequest(
 	ctx context.Context, channel string, arguments ...any,
 ) (any, error) {
-	c.dataMu.Lock()
+	c.connReqMu.Lock()
 	conn := c.conn
 	ctxClient := c.ctx
-	c.dataMu.Unlock()
+	c.connReqMu.Unlock()
 	if conn == nil {
 		return nil, fmt.Errorf("connection is closed")
 	}
@@ -190,17 +200,17 @@ func (c *Client) sendRequest(
 	// Create channel for message response
 	respCh := make(chan messageResponse, 1)
 
-	// Add channel to server's pending requests and get unique request ID
-	c.server.requestMu.Lock()
-	c.server.requestID++
-	requestID := c.server.requestID
-	if c.server.requestResponseCh[requestID] != nil {
+	// Add channel to client's pending requests and get unique request ID
+	c.connReqMu.Lock()
+	c.requestID++
+	requestID := c.requestID
+	if c.requestResponseCh[requestID] != nil {
 		// should never happen
-		c.server.requestMu.Unlock()
+		c.connReqMu.Unlock()
 		return nil, fmt.Errorf("request ID %d already in use", requestID)
 	} else {
-		c.server.requestResponseCh[requestID] = respCh
-		c.server.requestMu.Unlock()
+		c.requestResponseCh[requestID] = respCh
+		c.connReqMu.Unlock()
 	}
 
 	// Send request to client
@@ -210,9 +220,9 @@ func (c *Client) sendRequest(
 		RequestID: &requestID,
 	})
 	if err != nil {
-		c.server.requestMu.Lock()
-		delete(c.server.requestResponseCh, requestID)
-		c.server.requestMu.Unlock()
+		c.connReqMu.Lock()
+		delete(c.requestResponseCh, requestID)
+		c.connReqMu.Unlock()
 		return nil, fmt.Errorf("sending request: %w", err)
 	}
 
@@ -234,10 +244,10 @@ func (c *Client) sendRequest(
 // Cancel the context to stop reading messages
 func (c *Client) readMessages() {
 	// Read messages from the client connection
-	c.dataMu.Lock()
+	c.connReqMu.Lock()
 	conn := c.conn
 	ctx := c.ctx
-	c.dataMu.Unlock()
+	c.connReqMu.Unlock()
 	if conn == nil {
 		// Connection was closed before readMessages had a chance to start.
 		return
@@ -455,12 +465,12 @@ func (c *Client) handleMessage(ctx context.Context, msg Message) error {
 	}
 
 	// Get request handler
-	c.server.requestMu.Lock()
-	respCh, ok := c.server.requestResponseCh[*msg.RequestID]
+	c.connReqMu.Lock()
+	respCh, ok := c.requestResponseCh[*msg.RequestID]
 	if ok {
-		delete(c.server.requestResponseCh, *msg.RequestID)
+		delete(c.requestResponseCh, *msg.RequestID)
 	}
-	c.server.requestMu.Unlock()
+	c.connReqMu.Unlock()
 	if respCh == nil {
 		return nil // ignore message with invalid request ID
 	}

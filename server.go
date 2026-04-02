@@ -12,25 +12,21 @@ import (
 // WebSocket library. Various adapter libraries are available in the adapters
 // subdirectory.
 type Server struct {
-	ServerChannel     // the "main" server channel with no name
-	clientsMu         sync.Mutex
-	clients           map[*Client]struct{} // set to nil when server is closed
-	handlersMu        sync.Mutex
-	handlers          map[handlerName]any
-	handlersOnce      map[handlerName]any
-	handlerCtxFunc    HandlerContextFunc
-	requestMu         sync.Mutex
-	requestID         int
-	requestResponseCh map[int]chan messageResponse
+	ServerChannel  // the "main" server channel with no name
+	clientsMu      sync.Mutex
+	clients        map[*Client]struct{} // set to nil when server is closed
+	handlersMu     sync.Mutex
+	handlers       map[handlerName]any
+	handlersOnce   map[handlerName]any
+	handlerCtxFunc HandlerContextFunc
 }
 
 // NewServer creates a new server.
 func NewServer() *Server {
 	s := &Server{
-		clients:           make(map[*Client]struct{}),
-		handlers:          make(map[handlerName]any),
-		handlersOnce:      make(map[handlerName]any),
-		requestResponseCh: make(map[int]chan messageResponse),
+		clients:      make(map[*Client]struct{}),
+		handlers:     make(map[handlerName]any),
+		handlersOnce: make(map[handlerName]any),
 	}
 	// set reference back to client, so channel methods work properly
 	s.ServerChannel.server = s
@@ -77,15 +73,6 @@ func (s *Server) Close() error {
 			clientErr = err
 		}
 	}
-
-	// Abort all pending requests
-	s.requestMu.Lock()
-	for _, respCh := range s.requestResponseCh {
-		respCh <- messageResponse{nil, fmt.Errorf("request aborted")}
-		close(respCh)
-	}
-	clear(s.requestResponseCh)
-	s.requestMu.Unlock()
 
 	return clientErr
 }
