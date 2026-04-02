@@ -50,8 +50,9 @@ func (s *Server) Accept(conn Conn) error {
 	s.clients[client] = struct{}{}
 	s.clientsMu.Unlock()
 
-	go client.readMessages()
+	// Run "open" event handlers before reading messages
 	s.emitOpen(client)
+	go client.readMessages()
 	return nil
 }
 

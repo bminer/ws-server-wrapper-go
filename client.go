@@ -57,9 +57,11 @@ func newClient(conn Conn, server *Server) *Client {
 // Close closes the client connection and removes it from the list of clients
 // connected to the server.
 func (c *Client) Close(status StatusCode, reason string) error {
-	c.server.clientsMu.Lock()
-	delete(c.server.clients, c)
-	c.server.clientsMu.Unlock()
+	if c.server != nil {
+		c.server.clientsMu.Lock()
+		delete(c.server.clients, c)
+		c.server.clientsMu.Unlock()
+	}
 	return c.closeWithoutLock(status, reason)
 }
 
@@ -85,7 +87,9 @@ func (c *Client) closeWithoutLock(status StatusCode, reason string) error {
 	c.connReqMu.Unlock()
 	// Emit "close" events and close the connection
 	c.emitClose(status, reason)
-	c.server.emitClose(c, status, reason)
+	if c.server != nil {
+		c.server.emitClose(c, status, reason)
+	}
 	return conn.Close(status, reason)
 }
 
@@ -259,7 +263,9 @@ func (c *Client) readMessages() {
 			// Emit error and close client
 			err = fmt.Errorf("read message: %w", err)
 			c.emitError(err)
-			c.server.emitError(c, err)
+			if c.server != nil {
+				c.server.emitError(c, err)
+			}
 			c.Close(StatusInternalError, err.Error())
 			return
 		}
@@ -285,7 +291,9 @@ func (c *Client) readMessages() {
 			// Emit error and close client
 			err = fmt.Errorf("handle message: %w", err)
 			c.emitError(err)
-			c.server.emitError(c, err)
+			if c.server != nil {
+				c.server.emitError(c, err)
+			}
 			c.Close(StatusInternalError, err.Error())
 			return
 		}
@@ -351,7 +359,6 @@ func (c *Client) handleMessage(ctx context.Context, msg Message) error {
 
 		// Get client-specific handler
 		c.handlersMu.Lock()
-		handlerCtxFunc := c.server.handlerCtxFunc
 		handler, ok := c.handlersOnce[handlerID]
 		if ok {
 			delete(c.handlersOnce, handlerID)
@@ -360,14 +367,19 @@ func (c *Client) handleMessage(ctx context.Context, msg Message) error {
 		}
 		c.handlersMu.Unlock()
 
-		// Get server handler if no client handler exists
-		if handler == nil {
+		// Get server's handler Context function
+		var handlerCtxFunc HandlerContextFunc
+		if c.server != nil {
 			c.server.handlersMu.Lock()
-			handler, ok = c.server.handlersOnce[handlerID]
-			if ok {
-				delete(c.server.handlersOnce, handlerID)
-			} else {
-				handler = c.server.handlers[handlerID]
+			handlerCtxFunc = c.server.handlerCtxFunc
+			// Get server handler if no client handler exists
+			if handler == nil {
+				handler, ok = c.server.handlersOnce[handlerID]
+				if ok {
+					delete(c.server.handlersOnce, handlerID)
+				} else {
+					handler = c.server.handlers[handlerID]
+				}
 			}
 			c.server.handlersMu.Unlock()
 		}
@@ -437,7 +449,9 @@ func (c *Client) handleMessage(ctx context.Context, msg Message) error {
 				// Emit error and close client
 				err = fmt.Errorf("responding to request: %w", err)
 				c.emitError(err)
-				c.server.emitError(c, err)
+				if c.server != nil {
+					c.server.emitError(c, err)
+				}
 				c.Close(StatusInternalError, err.Error())
 			}
 		}()
