@@ -26,6 +26,7 @@ type conn struct {
 
 // ReadMessage reads a single message from the connection
 func (c conn) ReadMessage(ctx context.Context, msg *wrapper.Message) error {
+	// Note: message type is ignored by wsjson.Read
 	return wsjson.Read(ctx, c.Conn, msg)
 }
 
