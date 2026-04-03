@@ -47,8 +47,8 @@ type handlerName struct {
 	Event   string
 }
 
-var errorType = reflect.TypeOf((*error)(nil)).Elem()
-var contextType = reflect.TypeOf((*context.Context)(nil)).Elem()
+var errorType = reflect.TypeFor[error]()
+var contextType = reflect.TypeFor[context.Context]()
 
 // HandlerContextFunc is a function that can modify the context passed to every
 // registered event handler before it is called.
@@ -111,7 +111,7 @@ func callHandler(
 	if hasContext {
 		ins[0] = reflect.ValueOf(ctx)
 	}
-	for i := 0; i < len(arguments); i++ {
+	for i := range arguments {
 		paramT := handlerT.In(argOffset + i) // function parameter type
 		argV := reflect.New(paramT)
 		err = json.Unmarshal(arguments[i], argV.Interface())

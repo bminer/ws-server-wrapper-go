@@ -58,7 +58,7 @@ func TestCallHandler(t *testing.T) {
 			Handler: func(ctx context.Context, ints []int) (TestStruct, error) {
 				// Convert ints to floats
 				slice := make([]float64, len(ints))
-				for i := 0; i < len(ints); i++ {
+				for i := range ints {
 					slice[i] = float64(ints[i])
 				}
 				return TestStruct{
@@ -77,7 +77,7 @@ func TestCallHandler(t *testing.T) {
 			Handler: func(ctx context.Context, ints []int) (TestStruct, error) {
 				// Convert ints to floats
 				slice := make([]float64, len(ints))
-				for i := 0; i < len(ints); i++ {
+				for i := range ints {
 					slice[i] = float64(ints[i])
 				}
 				return TestStruct{
