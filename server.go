@@ -69,8 +69,8 @@ func (s *Server) Close() error {
 
 	// Close all client connections
 	for client := range clients {
-		if err := client.closeWithoutLock(
-			StatusGoingAway, "server is closing",
+		if err := client.close(
+			StatusGoingAway, "server is closing", false, true,
 		); err != nil && clientErr == nil {
 			clientErr = err
 		}
@@ -129,10 +129,16 @@ func (s *Server) emitError(c *Client, err error) bool {
 
 // emitClose calls the "close" and "disconnect" event handlers on the main
 // channel
-func (s *Server) emitClose(c *Client, status StatusCode, reason string) bool {
+func (s *Server) emitClose(
+	c *Client, status StatusCode, reason string, userClosed bool,
+) bool {
 	return emitReserved(
 		func(f any) bool {
-			if f, ok := f.(CloseHandler); ok {
+			switch f := f.(type) {
+			case CloseHandler:
+				f(c, status, reason, userClosed)
+				return true
+			case CloseHandlerOld:
 				f(c, status, reason)
 				return true
 			}

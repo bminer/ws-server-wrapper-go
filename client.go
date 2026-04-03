@@ -124,20 +124,31 @@ func (c *Client) Bind(conn Conn) {
 	go c.readMessages()
 }
 
-// Close closes the client connection and removes it from the list of clients
-// connected to the server.
+// Close closes the active connection, aborts pending requets, and fires the
+// "close"/"disconnect" event handlers synchronously before returning. If this
+// Client is associated with a Server, Close removes it from the Server's set of
+// connected clients.
 func (c *Client) Close(status StatusCode, reason string) error {
-	if c.server != nil {
+	return c.close(status, reason, true, false)
+}
+
+// close closes the active connection. Internal calls to close the Client should
+// use this method only. The public Close method is reserved for user-facing
+// code.
+func (c *Client) close(
+	status StatusCode,
+	reason string,
+	userClosed bool,
+	serverClosing bool,
+) error {
+	// Note: Server.Close sets userClosed to false
+	if !serverClosing && c.server != nil {
 		c.server.clientsMu.Lock()
 		delete(c.server.clients, c)
 		c.server.clientsMu.Unlock()
 	}
-	return c.closeWithoutLock(status, reason)
-}
 
-// closeWithoutLock closes the client connection without locking the server's
-// clientsMu lock. This is used when the server is closing all clients.
-func (c *Client) closeWithoutLock(status StatusCode, reason string) error {
+	// Get active connection
 	c.connReqMu.Lock()
 	conn := c.conn
 	if conn == nil {
@@ -145,7 +156,7 @@ func (c *Client) closeWithoutLock(status StatusCode, reason string) error {
 		// Connection was already closed
 		return nil
 	}
-	// Clear c.conn to indicate connection is closed
+	// Cancel context and clear c.conn to indicate connection is closed
 	c.ctxCancel(fmt.Errorf("client closed (status: %v)", status))
 	c.conn = nil
 	// Abort all pending outbound requests for this client.
@@ -156,9 +167,9 @@ func (c *Client) closeWithoutLock(status StatusCode, reason string) error {
 	clear(c.requestResponseCh)
 	c.connReqMu.Unlock()
 	// Emit "close" events and close the connection
-	c.emitClose(status, reason)
+	c.emitClose(status, reason, userClosed)
 	if c.server != nil {
-		c.server.emitClose(c, status, reason)
+		c.server.emitClose(c, status, reason, userClosed)
 	}
 	return conn.Close(status, reason)
 }
@@ -256,9 +267,22 @@ func (c *Client) sendRequest(
 	c.connReqMu.Lock()
 	conn := c.conn
 	ctxClient := c.ctx
-	c.connReqMu.Unlock()
 	if conn == nil {
+		c.connReqMu.Unlock()
 		return nil, fmt.Errorf("connection is closed")
+	}
+	// Create channel for message response
+	respCh := make(chan messageResponse, 1)
+	// Add channel to client's pending requests and get unique request ID
+	c.requestID++
+	requestID := c.requestID
+	if c.requestResponseCh[requestID] != nil {
+		// should never happen
+		c.connReqMu.Unlock()
+		return nil, fmt.Errorf("request ID %d already in use", requestID)
+	} else {
+		c.requestResponseCh[requestID] = respCh
+		c.connReqMu.Unlock()
 	}
 
 	// Encode arguments as JSON
@@ -269,22 +293,6 @@ func (c *Client) sendRequest(
 			return nil, err
 		}
 		jsonArgs[i] = buf
-	}
-
-	// Create channel for message response
-	respCh := make(chan messageResponse, 1)
-
-	// Add channel to client's pending requests and get unique request ID
-	c.connReqMu.Lock()
-	c.requestID++
-	requestID := c.requestID
-	if c.requestResponseCh[requestID] != nil {
-		// should never happen
-		c.connReqMu.Unlock()
-		return nil, fmt.Errorf("request ID %d already in use", requestID)
-	} else {
-		c.requestResponseCh[requestID] = respCh
-		c.connReqMu.Unlock()
 	}
 
 	// Send request to client
@@ -340,7 +348,7 @@ func (c *Client) readMessages() {
 			if c.server != nil {
 				c.server.emitError(c, err)
 			}
-			c.Close(StatusInternalError, err.Error())
+			c.close(StatusInternalError, err.Error(), false, false)
 			return
 		}
 
@@ -365,7 +373,7 @@ func (c *Client) readMessages() {
 			if c.server != nil {
 				c.server.emitError(c, err)
 			}
-			c.Close(StatusInternalError, err.Error())
+			c.close(StatusInternalError, err.Error(), false, false)
 			return
 		}
 	}
@@ -419,11 +427,15 @@ func (c *Client) emitMessage(msg Message) bool {
 
 // emitClose calls the "close" and "disconnect" event handlers on the main
 // channel
-func (c *Client) emitClose(status StatusCode, reason string) bool {
+func (c *Client) emitClose(s StatusCode, reason string, userClosed bool) bool {
 	return emitReserved(
 		func(f any) bool {
-			if f, ok := f.(CloseHandler); ok {
-				f(c, status, reason)
+			switch f := f.(type) {
+			case CloseHandler:
+				f(c, s, reason, userClosed)
+				return true
+			case CloseHandlerOld:
+				f(c, s, reason)
 				return true
 			}
 			return false
@@ -539,7 +551,7 @@ func (c *Client) handleMessage(ctx context.Context, msg Message) error {
 				if c.server != nil {
 					c.server.emitError(c, err)
 				}
-				c.Close(StatusInternalError, err.Error())
+				c.close(StatusInternalError, err.Error(), false, false)
 			}
 		}()
 		return nil

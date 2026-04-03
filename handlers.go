@@ -62,7 +62,8 @@ type HandlerContextFunc func(
 type OpenHandler = func(*Client)
 type ErrorHandler = func(*Client, error)
 type MessageHandler = func(*Client, Message)
-type CloseHandler = func(*Client, StatusCode, string)
+type CloseHandler = func(*Client, StatusCode, string, bool)
+type CloseHandlerOld = func(*Client, StatusCode, string)
 
 // Calls the handler function with the given arguments. Passes the Context to
 // the handler if the first argument is a Context. The handler function must
