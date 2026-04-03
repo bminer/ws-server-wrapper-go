@@ -212,10 +212,11 @@ func checkHandler(channel, eventName string, handler any) error {
 		case EventClose:
 			fallthrough
 		case EventDisconnect:
-			_, ok := handler.(CloseHandler)
-			if !ok {
+			_, ok1 := handler.(CloseHandler)
+			_, ok2 := handler.(CloseHandlerOld)
+			if !ok1 && !ok2 {
 				return fmt.Errorf(
-					"handler '%s' must be func(*Client, StatusCode, string)",
+					"handler '%s' must be func(*Client, StatusCode, string, bool)",
 					eventName,
 				)
 			}

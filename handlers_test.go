@@ -213,6 +213,10 @@ func TestCheckHandler(t *testing.T) {
 	}
 
 	// Valid: reserved "close" handler
+	h = func(*Client, StatusCode, string, bool) {}
+	if err := checkHandler("", EventClose, h); err != nil {
+		t.Errorf("unexpected error for valid close handler: %v", err)
+	}
 	h = func(*Client, StatusCode, string) {}
 	if err := checkHandler("", EventClose, h); err != nil {
 		t.Errorf("unexpected error for valid close handler: %v", err)

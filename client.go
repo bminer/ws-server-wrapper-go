@@ -36,18 +36,20 @@ type Client struct {
 // event handlers on the returned Client, then call Client.Bind to attach a
 // WebSocket connection and begin processing messages.
 //
-// An optional conn may be provided; if non-nil it is passed to Bind
-// immediately so the one-liner form works:
+// Pass a non-nil conn to bind immediately (useful when no "open" handler is
+// needed):
 //
 //	client := wrapper.NewClient(coder.Wrap(wsConn))
 //
-// When conn is omitted, register your event handlers first and then call Bind
-// to guarantee no inbound message can arrives before handler registration.
+// Pass nil when you want to register handlers first — the recommended pattern
+// because it ensures no inbound message can arrive before a handler is in
+// place:
 //
 //	client := wrapper.NewClient(nil)
 //	client.On("open", func(c *wrapper.Client) { /* ... */ })
 //	client.On("news", func(headline string) error { /* ... */ return nil })
-//	client.Bind(coder.Wrap(websocket.Dial(ctx, "ws://example.com/ws", nil)))
+//	conn, _ := websocket.Dial(ctx, "ws://example.com/ws", nil)
+//	client.Bind(coder.Wrap(conn))
 func NewClient(conn Conn) *Client {
 	// Create client
 	c := &Client{
@@ -82,6 +84,20 @@ func NewClient(conn Conn) *Client {
 // Bind fires the "open"/"connect" event handlers synchronously before
 // returning. This guarantees that any handlers registered inside the "open"
 // callback are registered before any inbound messages are processed.
+//
+// To implement reconnection, call Bind again inside the "close" handler. Use
+// the userClosed parameter to distinguish a user-initiated close from a
+// connection drop — only reconnect when userClosed is false:
+//
+//	client.On("close", func(c *wrapper.Client, status wrapper.StatusCode, reason string, userClosed bool) {
+//	    if userClosed {
+//	        return // don't reconnect when the user explicitly closed
+//	    }
+//	    conn, err := websocket.Dial(ctx, "ws://example.com/ws", nil)
+//	    if err == nil {
+//	        c.Bind(coder.Wrap(conn))
+//	    }
+//	})
 func (c *Client) Bind(conn Conn) {
 	c.connReqMu.Lock()
 	oldConn := c.conn

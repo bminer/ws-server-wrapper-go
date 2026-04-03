@@ -64,8 +64,9 @@ type ClientChannel struct {
 //     event is primarily for logging purposes.
 //
 //   - "close" or "disconnect" - called when the client disconnects. The handler
-//     is passed the status code and reason and has the form
-//     `func(*Client, StatusCode, string)`
+//     is passed the status code, reason string, and a boolean indicating
+//     whether the close was user-initiated (i.e. Client.Close was called). The
+//     handler has the form `func(*Client, StatusCode, string, bool)`
 //
 // The reserved events that can occur on the main channel of a server include:
 //

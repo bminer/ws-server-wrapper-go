@@ -121,7 +121,7 @@ func TestServerCloseHandler(t *testing.T) {
 	conn := newMockConn()
 
 	closeFired := make(chan struct{}, 1)
-	server.On("close", func(c *Client, status StatusCode, reason string) {
+	server.On("close", func(c *Client, status StatusCode, reason string, userClosed bool) {
 		closeFired <- struct{}{}
 	})
 
@@ -170,7 +170,7 @@ func TestClientCloseDirectly(t *testing.T) {
 	})
 
 	closeFired := make(chan StatusCode, 1)
-	server.On("close", func(c *Client, status StatusCode, reason string) {
+	server.On("close", func(c *Client, status StatusCode, reason string, userClosed bool) {
 		if c == capturedClient {
 			closeFired <- status
 		}
@@ -692,12 +692,15 @@ func TestHandlerCancellationAfterCompletion(t *testing.T) {
 // before the handlers are in place. The same client can be reused for
 // reconnection by calling Bind again with a new connection.
 func ExampleNewClient() {
-	client := NewClient()
+	client := NewClient(nil)
 
 	client.On("open", func(c *Client) {
 		log.Println("connected to server")
 	})
-	client.On("close", func(c *Client, status StatusCode, reason string) {
+	client.On("close", func(c *Client, status StatusCode, reason string, userClosed bool) {
+		if userClosed {
+			return // explicit close, don't reconnect
+		}
 		log.Println("disconnected:", reason)
 		// To reconnect, dial a new connection and call Bind again:
 		// conn, _ := websocket.Dial(ctx, "ws://example.com/ws", nil)
@@ -719,7 +722,7 @@ func ExampleNewClient() {
 // TestNewClient_NoConn verifies that NewClient without a conn creates a client
 // whose event handlers can be registered and whose Bind can be called later.
 func TestNewClient_NoConn(t *testing.T) {
-	client := NewClient()
+	client := NewClient(nil)
 
 	openFired := make(chan struct{})
 	client.On("open", func(c *Client) {
@@ -747,16 +750,16 @@ func TestNewClient_WithConn(t *testing.T) {
 	openFired := make(chan struct{})
 	conn := newMockConn()
 
-	client := NewClient() // handlers registered before Bind for safety
+	client := NewClient(conn)
+	// "open" handler registered too late
 	client.On("open", func(c *Client) {
 		close(openFired)
 	})
-	client.Bind(conn)
 
 	select {
 	case <-openFired:
-	case <-time.After(time.Second):
-		t.Fatal("open handler did not fire")
+		t.Fatal("open handler fired synchronously")
+	case <-time.After(50 * time.Millisecond):
 	}
 	_ = client
 	conn.Close(StatusNormalClosure, "done")
@@ -781,7 +784,7 @@ func TestBind_OpenFiresBeforeRead(t *testing.T) {
 	}
 
 	done := make(chan struct{})
-	client := NewClient()
+	client := NewClient(nil)
 	client.On("open", func(c *Client) {
 		record("open")
 		// Register the "news" handler inside the open callback — this is the
@@ -819,16 +822,19 @@ func TestBind_Reconnect(t *testing.T) {
 	opens := make(chan struct{}, 2)
 	reconnected := make(chan struct{})
 
-	client := NewClient()
+	client := NewClient(nil)
 	client.On("open", func(c *Client) {
 		opens <- struct{}{}
 	})
-	client.On("close", func(c *Client, status StatusCode, reason string) {
+	client.On("close", func(c *Client, status StatusCode, reason string, userClosed bool) {
+		if userClosed {
+			return // explicit close, don't reconnect
+		}
 		select {
 		case <-reconnected:
-			// second close — don't rebind
+			// second drop — don't rebind
 		default:
-			// first close — reconnect on conn2
+			// first drop — reconnect on conn2
 			close(reconnected)
 			c.Bind(conn2)
 		}
@@ -863,7 +869,7 @@ func TestBind_PendingRequestsAborted(t *testing.T) {
 	conn1 := newMockConn()
 	conn2 := newMockConn()
 
-	client := NewClient()
+	client := NewClient(nil)
 	client.Bind(conn1)
 
 	// Start a request on conn1 that will never receive a response.
@@ -896,7 +902,7 @@ func TestBind_PendingRequestsAborted(t *testing.T) {
 func TestNewClient_HandleInboundEvent(t *testing.T) {
 	called := make(chan string, 1)
 
-	client := NewClient()
+	client := NewClient(nil)
 	client.On("greet", func(name string) error {
 		called <- name
 		return nil
@@ -921,3 +927,76 @@ func TestNewClient_HandleInboundEvent(t *testing.T) {
 	conn.Close(StatusNormalClosure, "done")
 }
 
+// TestBind_UserClosed verifies that the userClosed flag passed to the "close"
+// handler correctly reflects whether the close was user-initiated or not.
+//
+//   - userClosed=true  when client.Close() is called explicitly
+//   - userClosed=false when the underlying connection drops (or the server closes it)
+func TestBind_UserClosed(t *testing.T) {
+	t.Run("connection drop → userClosed=false", func(t *testing.T) {
+		client := NewClient(nil)
+		conn := newMockConn()
+
+		got := make(chan bool, 1)
+		client.On("close", func(c *Client, status StatusCode, reason string, userClosed bool) {
+			got <- userClosed
+		})
+		client.Bind(conn)
+
+		// Simulate a connection drop from the remote side.
+		conn.Close(StatusNormalClosure, "dropped")
+
+		select {
+		case uc := <-got:
+			if uc {
+				t.Fatal("expected userClosed=false for a connection drop, got true")
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("close handler did not fire")
+		}
+	})
+
+	t.Run("client.Close() → userClosed=true", func(t *testing.T) {
+		client := NewClient(nil)
+		conn := newMockConn()
+
+		got := make(chan bool, 1)
+		client.On("close", func(c *Client, status StatusCode, reason string, userClosed bool) {
+			got <- userClosed
+		})
+		client.Bind(conn)
+		client.Close(StatusNormalClosure, "bye")
+
+		select {
+		case uc := <-got:
+			if !uc {
+				t.Fatal("expected userClosed=true for an explicit Close(), got false")
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("close handler did not fire")
+		}
+	})
+
+	t.Run("server.Close() → userClosed=false", func(t *testing.T) {
+		server := NewServer()
+		conn := newMockConn()
+
+		got := make(chan bool, 1)
+		server.On("close", func(c *Client, status StatusCode, reason string, userClosed bool) {
+			got <- userClosed
+		})
+		if err := server.Accept(conn); err != nil {
+			t.Fatal(err)
+		}
+		server.Close()
+
+		select {
+		case uc := <-got:
+			if uc {
+				t.Fatal("expected userClosed=false when server closes, got true")
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("close handler did not fire")
+		}
+	})
+}
