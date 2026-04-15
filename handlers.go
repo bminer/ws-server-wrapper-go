@@ -43,8 +43,9 @@ func IsReservedEvent(eventName string) bool {
 // handlerName is a unique name for a handler function having the specified
 // channel and event name.
 type handlerName struct {
-	Channel string
-	Event   string
+	Channel   string
+	Event     string
+	Anonymous bool // true for anonymous channel handlers
 }
 
 var errorType = reflect.TypeFor[error]()

@@ -1000,3 +1000,468 @@ func TestBind_UserClosed(t *testing.T) {
 		}
 	})
 }
+
+// TestAnonymousChannelCreation verifies that a handler can create and return
+// an anonymous channel via Client.Channel(ctx), and the response includes {i, h}.
+func TestAnonymousChannelCreation(t *testing.T) {
+	server := NewServer()
+	conn := newMockConn()
+
+	server.On("openCalc", func(ctx context.Context) (*ClientChannel, error) {
+		client := ClientFromContext(ctx)
+		ch := client.Channel(ctx)
+		if ch == nil {
+			return nil, fmt.Errorf("Channel() returned nil")
+		}
+		ch.On("add", func(a, b float64) (float64, error) {
+			return a + b, nil
+		})
+		return ch, nil
+	})
+
+	if err := server.Accept(conn); err != nil {
+		t.Fatal(err)
+	}
+
+	// Send request that should return an anonymous channel
+	reqID := 1
+	conn.send(Message{
+		RequestID: &reqID,
+		Arguments: []json.RawMessage{[]byte(`"openCalc"`)},
+	})
+
+	resp := conn.waitWritten(t, time.Second)
+	if resp.RequestID == nil || *resp.RequestID != reqID {
+		t.Fatalf("expected response for request %d, got %+v", reqID, resp)
+	}
+	if resp.AnonChannel == "" {
+		t.Fatal("expected AnonChannel field in response, got empty")
+	}
+	if resp.AnonChannel != "1" {
+		t.Fatalf("expected AnonChannel '1', got %q", resp.AnonChannel)
+	}
+
+	conn.Close(StatusNormalClosure, "done")
+}
+
+// TestAnonymousChannelEventHandling verifies that events sent on an anonymous
+// channel are routed to the correct handler.
+func TestAnonymousChannelEventHandling(t *testing.T) {
+	server := NewServer()
+	conn := newMockConn()
+
+	addCalled := make(chan float64, 1)
+	server.On("openCalc", func(ctx context.Context) (*ClientChannel, error) {
+		client := ClientFromContext(ctx)
+		ch := client.Channel(ctx)
+		ch.On("add", func(a, b float64) (float64, error) {
+			result := a + b
+			addCalled <- result
+			return result, nil
+		})
+		return ch, nil
+	})
+
+	if err := server.Accept(conn); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create anonymous channel
+	reqID := 1
+	conn.send(Message{
+		RequestID: &reqID,
+		Arguments: []json.RawMessage{[]byte(`"openCalc"`)},
+	})
+	resp := conn.waitWritten(t, time.Second)
+	anonID := resp.AnonChannel
+
+	// Send request on anonymous channel
+	subReqID := 2
+	conn.send(Message{
+		AnonChannel: anonID,
+		RequestID:   &subReqID,
+		Arguments:   []json.RawMessage{[]byte(`"add"`), []byte(`3`), []byte(`4`)},
+	})
+
+	// Wait for handler to be called
+	select {
+	case result := <-addCalled:
+		if result != 7 {
+			t.Fatalf("expected 7, got %v", result)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("add handler not called")
+	}
+
+	// Check response
+	subResp := conn.waitWritten(t, time.Second)
+	if subResp.RequestID == nil || *subResp.RequestID != subReqID {
+		t.Fatalf("expected response for request %d, got %+v", subReqID, subResp)
+	}
+	if subResp.ResponseData != 7.0 {
+		t.Fatalf("expected 7, got %v", subResp.ResponseData)
+	}
+
+	conn.Close(StatusNormalClosure, "done")
+}
+
+// TestAnonymousChannelCloseLocal verifies that Close() on an anonymous channel
+// sends {h, x} to the remote and removes handlers.
+func TestAnonymousChannelCloseLocal(t *testing.T) {
+	server := NewServer()
+	conn := newMockConn()
+
+	var anonCh *ClientChannel
+	server.On("openCh", func(ctx context.Context) (*ClientChannel, error) {
+		client := ClientFromContext(ctx)
+		anonCh = client.Channel(ctx)
+		anonCh.On("ping", func() error { return nil })
+		return anonCh, nil
+	})
+
+	if err := server.Accept(conn); err != nil {
+		t.Fatal(err)
+	}
+
+	reqID := 1
+	conn.send(Message{
+		RequestID: &reqID,
+		Arguments: []json.RawMessage{[]byte(`"openCh"`)},
+	})
+	conn.waitWritten(t, time.Second) // consume creation response
+
+	// Close the anonymous channel from server side
+	anonCh.Close()
+
+	// Should receive {h, x} cancellation message
+	cancelMsg := conn.waitWritten(t, time.Second)
+	if cancelMsg.AnonChannel == "" {
+		t.Fatal("expected AnonChannel in cancel message")
+	}
+	if cancelMsg.CancelReason == nil {
+		t.Fatal("expected CancelReason in cancel message")
+	}
+
+	conn.Close(StatusNormalClosure, "done")
+}
+
+// TestAnonymousChannelCloseFromRemote verifies that receiving {h, x} closes
+// the channel locally without sending {h, x} back.
+func TestAnonymousChannelCloseFromRemote(t *testing.T) {
+	server := NewServer()
+	conn := newMockConn()
+
+	closedCh := make(chan struct{}, 1)
+	server.On("openCh", func(ctx context.Context) (*ClientChannel, error) {
+		client := ClientFromContext(ctx)
+		ch := client.Channel(ctx)
+		ch.On("ping", func() error { return nil })
+		// Watch for channel context cancellation
+		go func() {
+			<-ch.client.anonChannels[ch.name].ctx.Done()
+			closedCh <- struct{}{}
+		}()
+		return ch, nil
+	})
+
+	if err := server.Accept(conn); err != nil {
+		t.Fatal(err)
+	}
+
+	reqID := 1
+	conn.send(Message{
+		RequestID: &reqID,
+		Arguments: []json.RawMessage{[]byte(`"openCh"`)},
+	})
+	resp := conn.waitWritten(t, time.Second)
+	anonID := resp.AnonChannel
+
+	// Send {h, x} from remote
+	conn.send(Message{
+		AnonChannel: anonID,
+		CancelReason: map[string]any{
+			"message": "remote closed",
+		},
+		ResponseJSError: true,
+	})
+
+	// Channel context should be cancelled
+	select {
+	case <-closedCh:
+	case <-time.After(time.Second):
+		t.Fatal("channel context was not cancelled after remote close")
+	}
+
+	// Verify no {h, x} was sent back (only the creation response should be in writeCh)
+	select {
+	case msg := <-conn.writeCh:
+		t.Fatalf("unexpected message after remote close: %+v", msg)
+	case <-time.After(200 * time.Millisecond):
+		// Good — no extra message sent
+	}
+
+	conn.Close(StatusNormalClosure, "done")
+}
+
+// TestAnonymousChannelNamespacing verifies that anonymous channel "1" and
+// named channel "1" don't interfere with each other.
+func TestAnonymousChannelNamespacing(t *testing.T) {
+	server := NewServer()
+	conn := newMockConn()
+
+	namedCalled := make(chan struct{}, 1)
+	anonCalled := make(chan struct{}, 1)
+
+	// Named channel "1" handler
+	server.Of("1").On("ping", func() error {
+		namedCalled <- struct{}{}
+		return nil
+	})
+
+	// Anonymous channel handler
+	server.On("openCh", func(ctx context.Context) (*ClientChannel, error) {
+		client := ClientFromContext(ctx)
+		ch := client.Channel(ctx)
+		ch.On("ping", func() error {
+			anonCalled <- struct{}{}
+			return nil
+		})
+		return ch, nil
+	})
+
+	if err := server.Accept(conn); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create anonymous channel (will have ID "1")
+	reqID := 1
+	conn.send(Message{
+		RequestID: &reqID,
+		Arguments: []json.RawMessage{[]byte(`"openCh"`)},
+	})
+	resp := conn.waitWritten(t, time.Second)
+	anonID := resp.AnonChannel
+
+	// Send event on named channel "1"
+	conn.send(Message{
+		Channel:   "1",
+		Arguments: []json.RawMessage{[]byte(`"ping"`)},
+	})
+	select {
+	case <-namedCalled:
+	case <-time.After(time.Second):
+		t.Fatal("named channel handler not called")
+	}
+
+	// Send event on anonymous channel "1"
+	conn.send(Message{
+		AnonChannel: anonID,
+		Arguments:   []json.RawMessage{[]byte(`"ping"`)},
+	})
+	select {
+	case <-anonCalled:
+	case <-time.After(time.Second):
+		t.Fatal("anonymous channel handler not called")
+	}
+
+	conn.Close(StatusNormalClosure, "done")
+}
+
+// TestChannelIdempotent verifies that calling Channel(ctx) twice with the
+// same context returns the same *ClientChannel pointer.
+func TestChannelIdempotent(t *testing.T) {
+	server := NewServer()
+	conn := newMockConn()
+
+	var ch1, ch2 *ClientChannel
+	server.On("test", func(ctx context.Context) (*ClientChannel, error) {
+		client := ClientFromContext(ctx)
+		ch1 = client.Channel(ctx)
+		ch2 = client.Channel(ctx)
+		return ch1, nil
+	})
+
+	if err := server.Accept(conn); err != nil {
+		t.Fatal(err)
+	}
+
+	reqID := 1
+	conn.send(Message{
+		RequestID: &reqID,
+		Arguments: []json.RawMessage{[]byte(`"test"`)},
+	})
+	conn.waitWritten(t, time.Second)
+
+	if ch1 != ch2 {
+		t.Fatal("Channel(ctx) should return the same pointer on second call")
+	}
+
+	conn.Close(StatusNormalClosure, "done")
+}
+
+// TestChannelOutsideHandler verifies that Channel(ctx) returns nil when
+// called outside of a request handler context.
+func TestChannelOutsideHandler(t *testing.T) {
+	client := NewClient(nil)
+	ch := client.Channel(context.Background())
+	if ch != nil {
+		t.Fatal("expected nil when Channel() called outside handler context")
+	}
+}
+
+// TestAnonymousChannelEmitAfterClose verifies that Emit returns an error
+// after the anonymous channel is closed.
+func TestAnonymousChannelEmitAfterClose(t *testing.T) {
+	server := NewServer()
+	conn := newMockConn()
+
+	var anonCh *ClientChannel
+	server.On("openCh", func(ctx context.Context) (*ClientChannel, error) {
+		client := ClientFromContext(ctx)
+		anonCh = client.Channel(ctx)
+		return anonCh, nil
+	})
+
+	if err := server.Accept(conn); err != nil {
+		t.Fatal(err)
+	}
+
+	reqID := 1
+	conn.send(Message{
+		RequestID: &reqID,
+		Arguments: []json.RawMessage{[]byte(`"openCh"`)},
+	})
+	conn.waitWritten(t, time.Second)
+
+	anonCh.Close()
+	// Drain the cancel message
+	conn.waitWritten(t, time.Second)
+
+	err := anonCh.Emit(context.Background(), "ping")
+	if err == nil {
+		t.Fatal("expected error emitting on closed anonymous channel")
+	}
+
+	conn.Close(StatusNormalClosure, "done")
+}
+
+// TestNamedChannelClose verifies that Close() on a named channel removes
+// handlers and causes Emit/Request to return errors.
+func TestNamedChannelClose(t *testing.T) {
+	server := NewServer()
+	conn := newMockConn()
+
+	var capturedClient *Client
+	server.On("open", func(c *Client) {
+		capturedClient = c
+	})
+
+	if err := server.Accept(conn); err != nil {
+		t.Fatal(err)
+	}
+
+	ch := capturedClient.Of("test")
+	ch.On("ping", func() error { return nil })
+
+	ch.Close()
+
+	err := ch.Emit(context.Background(), "ping")
+	if err == nil {
+		t.Fatal("expected error emitting on closed named channel")
+	}
+
+	conn.Close(StatusNormalClosure, "done")
+}
+
+// TestRequestChannelMethod verifies the client-side RequestChannel method by
+// simulating a server that returns an anonymous channel.
+func TestRequestChannelMethod(t *testing.T) {
+	conn := newMockConn()
+	client := NewClient(conn)
+
+	// Simulate: client sends request, server responds with {i, h}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		// Wait for the outbound request
+		msg := conn.waitWritten(t, time.Second)
+		if msg.RequestID == nil {
+			t.Error("expected request ID")
+			return
+		}
+		reqID := *msg.RequestID
+
+		// Respond with anonymous channel signal
+		anonID := fmt.Sprintf("%d", reqID)
+		conn.send(Message{
+			RequestID:   &reqID,
+			AnonChannel: anonID,
+		})
+	}()
+
+	ch, err := client.RequestChannel(context.Background(), "openCalc")
+	if err != nil {
+		t.Fatalf("RequestChannel failed: %v", err)
+	}
+	if ch == nil {
+		t.Fatal("expected non-nil channel")
+	}
+	if !ch.anonymous {
+		t.Fatal("expected anonymous channel")
+	}
+
+	<-done
+	conn.Close(StatusNormalClosure, "done")
+}
+
+// TestIgnoreIXForAnonChannel verifies that {i, x} cancellation messages are
+// ignored for request IDs that have an open anonymous channel.
+func TestIgnoreIXForAnonChannel(t *testing.T) {
+	server := NewServer()
+	conn := newMockConn()
+
+	var anonCh *ClientChannel
+	server.On("openCh", func(ctx context.Context) (*ClientChannel, error) {
+		client := ClientFromContext(ctx)
+		anonCh = client.Channel(ctx)
+		anonCh.On("ping", func() error { return nil })
+		return anonCh, nil
+	})
+
+	if err := server.Accept(conn); err != nil {
+		t.Fatal(err)
+	}
+
+	reqID := 1
+	conn.send(Message{
+		RequestID: &reqID,
+		Arguments: []json.RawMessage{[]byte(`"openCh"`)},
+	})
+	conn.waitWritten(t, time.Second) // creation response
+
+	// Send {i, x} for the same request ID — should be ignored
+	conn.send(Message{
+		RequestID:    &reqID,
+		CancelReason: "cancel attempt",
+	})
+
+	// Channel should still be open
+	time.Sleep(100 * time.Millisecond)
+	if anonCh.client.isAnonChannelClosed(anonCh.name) {
+		t.Fatal("anonymous channel should not be closed by {i, x}")
+	}
+
+	// Verify the anonymous channel still works
+	subReqID := 2
+	conn.send(Message{
+		AnonChannel: anonCh.name,
+		RequestID:   &subReqID,
+		Arguments:   []json.RawMessage{[]byte(`"ping"`)},
+	})
+	resp := conn.waitWritten(t, time.Second)
+	if resp.RequestID == nil || *resp.RequestID != subReqID {
+		t.Fatalf("expected response for sub-request %d", subReqID)
+	}
+
+	conn.Close(StatusNormalClosure, "done")
+}

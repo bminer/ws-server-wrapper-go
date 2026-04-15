@@ -29,6 +29,7 @@ func (bit *weakBool) UnmarshalJSON(data []byte) error {
 // See https://github.com/bminer/ws-wrapper/blob/master/README.md#protocol
 type Message struct {
 	Channel         string            `json:"c,omitempty"`
+	AnonChannel     string            `json:"h,omitempty"` // Anonymous channel ID
 	Arguments       []json.RawMessage `json:"a,omitempty"` // Arguments[0] is the event name
 	RequestID       *int              `json:"i,omitempty"`
 	ResponseData    any               `json:"d,omitempty"`
@@ -99,7 +100,7 @@ func (m Message) Response() (any, error) {
 // CancelCause returns the reason for this cancellation message as an error.
 // Returns context.Canceled if no reason is provided.
 func (m Message) CancelCause() error {
-	if m.RequestID == nil || m.CancelReason == nil {
+	if m.CancelReason == nil {
 		return errors.New("message is not a cancellation")
 	}
 	// Handle JavaScript error
@@ -139,6 +140,9 @@ func (m Message) LogValue() slog.Value {
 		attrs = []slog.Attr{
 			slog.String("ch", m.Channel),
 			slog.String("event", eventName),
+		}
+		if m.AnonChannel != "" {
+			attrs = append(attrs, slog.String("anonCh", m.AnonChannel))
 		}
 		for i, arg := range m.HandlerArguments() {
 			if len(arg) > MaxArgLength {

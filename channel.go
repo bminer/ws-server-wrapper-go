@@ -10,8 +10,9 @@ import (
 // remote end. See ClientChannel.On for more information about how received
 // events are handled.
 type ClientChannel struct {
-	name   string
-	client *Client
+	name      string
+	client    *Client
+	anonymous bool // true for anonymous channels
 }
 
 // On adds an event handler for the specified event to the channel. When an
@@ -86,7 +87,7 @@ func (c ClientChannel) On(eventName string, handler any) ClientChannel {
 	if err := checkHandler(c.name, eventName, handler); err != nil {
 		panic(err)
 	}
-	key := handlerName{Channel: c.name, Event: eventName}
+	key := handlerName{Channel: c.name, Event: eventName, Anonymous: c.anonymous}
 	c.client.handlersMu.Lock()
 	if handler == nil {
 		delete(c.client.handlers, key)
@@ -104,7 +105,7 @@ func (c ClientChannel) Once(eventName string, handler any) ClientChannel {
 	if err := checkHandler(c.name, eventName, handler); err != nil {
 		panic(err)
 	}
-	key := handlerName{Channel: c.name, Event: eventName}
+	key := handlerName{Channel: c.name, Event: eventName, Anonymous: c.anonymous}
 	c.client.handlersMu.Lock()
 	if handler == nil {
 		delete(c.client.handlersOnce, key)
@@ -137,10 +138,19 @@ func (c ClientChannel) Emit(ctx context.Context, arguments ...any) error {
 	if err != nil {
 		return err
 	}
-	if c.name == "" && IsReservedEvent(eventName) {
+	if !c.anonymous && c.name == "" && IsReservedEvent(eventName) {
 		return fmt.Errorf(
 			"cannot emit reserved event '%s' on main channel", eventName,
 		)
+	}
+	if c.anonymous {
+		if c.client.isAnonChannelClosed(c.name) {
+			return fmt.Errorf("anonymous channel '%s' is closed", c.name)
+		}
+		return c.client.sendAnonEvent(ctx, c.name, arguments...)
+	}
+	if c.client.isChannelClosed(c.name) {
+		return fmt.Errorf("channel '%s' is closed", c.name)
 	}
 	return c.client.sendEvent(ctx, c.name, arguments...)
 }
@@ -155,12 +165,52 @@ func (c ClientChannel) Request(
 	if err != nil {
 		return nil, err
 	}
+	if !c.anonymous && c.name == "" && IsReservedEvent(eventName) {
+		return nil, fmt.Errorf(
+			"cannot emit reserved event '%s' on main channel", eventName,
+		)
+	}
+	if c.anonymous {
+		if c.client.isAnonChannelClosed(c.name) {
+			return nil, fmt.Errorf("anonymous channel '%s' is closed", c.name)
+		}
+		return c.client.sendAnonRequest(ctx, c.name, arguments...)
+	}
+	if c.client.isChannelClosed(c.name) {
+		return nil, fmt.Errorf("channel '%s' is closed", c.name)
+	}
+	return c.client.sendRequest(ctx, c.name, arguments...)
+}
+
+// RequestChannel sends a request to the client and expects the remote handler
+// to return an anonymous channel. If the remote handler returns a normal value
+// instead, an error is returned.
+func (c ClientChannel) RequestChannel(
+	ctx context.Context, arguments ...any,
+) (*ClientChannel, error) {
+	eventName, err := checkEventName(arguments)
+	if err != nil {
+		return nil, err
+	}
 	if c.name == "" && IsReservedEvent(eventName) {
 		return nil, fmt.Errorf(
 			"cannot emit reserved event '%s' on main channel", eventName,
 		)
 	}
-	return c.client.sendRequest(ctx, c.name, arguments...)
+	return c.client.sendRequestChannel(ctx, c.name, arguments...)
+}
+
+// Close closes the channel. For anonymous channels, this sends {h, x} to the
+// remote end to signal that the channel is closed, cancels the channel context,
+// and removes all handlers. For named channels, this removes all handlers and
+// marks the channel as closed so that subsequent Emit and Request calls return
+// an error. Close is idempotent.
+func (c ClientChannel) Close() {
+	if c.anonymous {
+		c.client.closeAnonChannel(c.name)
+	} else {
+		c.client.closeNamedChannel(c.name)
+	}
 }
 
 // Name returns the name of the channel
