@@ -341,8 +341,8 @@ func TestServerChannelCloseMarksChannelClosed(t *testing.T) {
 		t.Fatal("expected closed-channel error from Emit")
 	} else {
 		var cerr ChannelClosedError
-		if !errors.As(errs[0].error, &cerr) {
-			t.Fatalf("expected ChannelClosedError, got %T", errs[0].error)
+		if !errors.As(errs[0], &cerr) {
+			t.Fatalf("expected ChannelClosedError, got %T", errs[0])
 		}
 	}
 }

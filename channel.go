@@ -134,8 +134,11 @@ func (c *ClientChannel) Once(eventName string, handler any) error {
 
 // Close removes all event handlers for this channel.
 func (c *ClientChannel) Close() error {
-	if err := c.ensureOpen(); err != nil {
-		return err
+	if c == nil {
+		return ChannelClosedError{}
+	}
+	if c.client == nil {
+		return nil
 	}
 	c.client.handlersMu.Lock()
 	closeHandlersForChannel(c.name, c.client.handlers, c.client.handlersOnce)
@@ -266,8 +269,11 @@ func (c *ServerChannel) Once(eventName string, handler any) error {
 
 // Close removes all event handlers for this channel.
 func (c *ServerChannel) Close() error {
-	if err := c.ensureOpen(); err != nil {
-		return err
+	if c == nil {
+		return ChannelClosedError{}
+	}
+	if c.server == nil {
+		return nil
 	}
 	c.server.handlersMu.Lock()
 	closeHandlersForChannel(c.name, c.server.handlers, c.server.handlersOnce)
