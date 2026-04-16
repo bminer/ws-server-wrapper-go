@@ -3,6 +3,7 @@ package wrapper
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"testing"
@@ -284,5 +285,64 @@ func TestServerChannelCloseRemovesChannelHandlers(t *testing.T) {
 	}
 	if _, ok := server.handlers[handlerName{Channel: "other", Event: "a"}]; !ok {
 		t.Fatal("expected handlers for other channels to be preserved")
+	}
+}
+
+func TestClientChannelCloseMarksChannelClosed(t *testing.T) {
+	client := NewClient(nil)
+	ch := client.Of("room")
+	if ch.client == nil {
+		t.Fatal("expected open channel to reference a client")
+	}
+	if err := ch.Close(); err != nil {
+		t.Fatalf("unexpected close error: %v", err)
+	}
+	if ch.client != nil {
+		t.Fatal("expected channel client reference to be nil after close")
+	}
+	if err := ch.On("a", func() error { return nil }); err == nil {
+		t.Fatal("expected closed-channel error from On")
+	} else {
+		var cerr ChannelClosedError
+		if !errors.As(err, &cerr) {
+			t.Fatalf("expected ChannelClosedError, got %T", err)
+		}
+	}
+	if err := ch.Once("a", func() error { return nil }); err == nil {
+		t.Fatal("expected closed-channel error from Once")
+	}
+	if err := ch.Emit(context.Background(), "a"); err == nil {
+		t.Fatal("expected closed-channel error from Emit")
+	}
+	if _, err := ch.Request(context.Background(), "a"); err == nil {
+		t.Fatal("expected closed-channel error from Request")
+	}
+}
+
+func TestServerChannelCloseMarksChannelClosed(t *testing.T) {
+	server := NewServer()
+	ch := server.Of("room")
+	if ch.server == nil {
+		t.Fatal("expected open channel to reference a server")
+	}
+	if err := ch.Close(); err != nil {
+		t.Fatalf("unexpected close error: %v", err)
+	}
+	if ch.server != nil {
+		t.Fatal("expected channel server reference to be nil after close")
+	}
+	if err := ch.On("a", func() error { return nil }); err == nil {
+		t.Fatal("expected closed-channel error from On")
+	}
+	if err := ch.Once("a", func() error { return nil }); err == nil {
+		t.Fatal("expected closed-channel error from Once")
+	}
+	if errs := ch.Emit(context.Background(), "a"); len(errs) == 0 {
+		t.Fatal("expected closed-channel error from Emit")
+	} else {
+		var cerr ChannelClosedError
+		if !errors.As(errs[0].error, &cerr) {
+			t.Fatalf("expected ChannelClosedError, got %T", errs[0].error)
+		}
 	}
 }

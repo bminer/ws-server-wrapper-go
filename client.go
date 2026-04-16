@@ -205,8 +205,8 @@ func (c *Client) Set(key string, value any) {
 }
 
 // Of returns a channel for the given name
-func (c *Client) Of(name string) ClientChannel {
-	return ClientChannel{
+func (c *Client) Of(name string) *ClientChannel {
+	return &ClientChannel{
 		name:   name,
 		client: c,
 	}
