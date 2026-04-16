@@ -115,6 +115,14 @@ func (c ClientChannel) Once(eventName string, handler any) ClientChannel {
 	return c
 }
 
+// Close removes all event handlers for this channel.
+func (c ClientChannel) Close() ClientChannel {
+	c.client.handlersMu.Lock()
+	closeHandlersForChannel(c.name, c.client.handlers, c.client.handlersOnce)
+	c.client.handlersMu.Unlock()
+	return c
+}
+
 // checkEventName ensures the event name is valid and returns it as a string.
 func checkEventName(arguments []any) (string, error) {
 	if len(arguments) < 1 {
@@ -208,6 +216,14 @@ func (c ServerChannel) Once(eventName string, handler any) ServerChannel {
 	} else {
 		c.server.handlersOnce[key] = handler
 	}
+	c.server.handlersMu.Unlock()
+	return c
+}
+
+// Close removes all event handlers for this channel.
+func (c ServerChannel) Close() ServerChannel {
+	c.server.handlersMu.Lock()
+	closeHandlersForChannel(c.name, c.server.handlers, c.server.handlersOnce)
 	c.server.handlersMu.Unlock()
 	return c
 }

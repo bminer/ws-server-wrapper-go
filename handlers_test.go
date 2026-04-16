@@ -246,3 +246,43 @@ func TestCheckHandler(t *testing.T) {
 		t.Error("expected error for handler with wrong return type")
 	}
 }
+
+func TestClientChannelCloseRemovesChannelHandlers(t *testing.T) {
+	client := NewClient(nil)
+
+	client.Of("room").On("a", func() error { return nil })
+	client.Of("room").Once("b", func() error { return nil })
+	client.Of("other").On("a", func() error { return nil })
+
+	client.Of("room").Close()
+
+	if _, ok := client.handlers[handlerName{Channel: "room", Event: "a"}]; ok {
+		t.Fatal("expected persistent room handler to be removed")
+	}
+	if _, ok := client.handlersOnce[handlerName{Channel: "room", Event: "b"}]; ok {
+		t.Fatal("expected once room handler to be removed")
+	}
+	if _, ok := client.handlers[handlerName{Channel: "other", Event: "a"}]; !ok {
+		t.Fatal("expected handlers for other channels to be preserved")
+	}
+}
+
+func TestServerChannelCloseRemovesChannelHandlers(t *testing.T) {
+	server := NewServer()
+
+	server.Of("room").On("a", func() error { return nil })
+	server.Of("room").Once("b", func() error { return nil })
+	server.Of("other").On("a", func() error { return nil })
+
+	server.Of("room").Close()
+
+	if _, ok := server.handlers[handlerName{Channel: "room", Event: "a"}]; ok {
+		t.Fatal("expected persistent room handler to be removed")
+	}
+	if _, ok := server.handlersOnce[handlerName{Channel: "room", Event: "b"}]; ok {
+		t.Fatal("expected once room handler to be removed")
+	}
+	if _, ok := server.handlers[handlerName{Channel: "other", Event: "a"}]; !ok {
+		t.Fatal("expected handlers for other channels to be preserved")
+	}
+}

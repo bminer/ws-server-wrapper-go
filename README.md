@@ -102,6 +102,9 @@ wsServer.Of("io").On("readFile", func(filename string) ([]byte, error) {
     // TODO: Sanitize `filename` for security reasons
     return os.ReadFile(filename)
 })
+
+// Remove all handlers on a channel when it is no longer needed.
+wsServer.Of("io").Close()
 ```
 
 ## Per-Client Handlers
