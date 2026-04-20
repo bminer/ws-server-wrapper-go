@@ -206,9 +206,11 @@ func (c *Client) Set(key string, value any) {
 
 // Of returns a channel for the given name
 func (c *Client) Of(name string) ClientChannel {
+	closed := false
 	return ClientChannel{
 		name:   name,
 		client: c,
+		closed: &closed,
 	}
 }
 

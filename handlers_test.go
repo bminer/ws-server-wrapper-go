@@ -294,9 +294,11 @@ func TestClientChannelCloseMarksChannelClosed(t *testing.T) {
 	if ch.client == nil {
 		t.Fatal("expected open channel to reference a client")
 	}
-	ch = ch.Close()
-	if ch.client != nil {
-		t.Fatal("expected channel client reference to be nil after close")
+	if err := ch.Close(); err != nil {
+		t.Fatalf("unexpected close error: %v", err)
+	}
+	if err := ch.Close(); err != nil {
+		t.Fatalf("unexpected close error on second close: %v", err)
 	}
 	ch.On("a", func() error { return nil })
 	ch.Once("a", func() error { return nil })
@@ -324,9 +326,11 @@ func TestServerChannelCloseMarksChannelClosed(t *testing.T) {
 	if ch.server == nil {
 		t.Fatal("expected open channel to reference a server")
 	}
-	ch = ch.Close()
-	if ch.server != nil {
-		t.Fatal("expected channel server reference to be nil after close")
+	if err := ch.Close(); err != nil {
+		t.Fatalf("unexpected close error: %v", err)
+	}
+	if err := ch.Close(); err != nil {
+		t.Fatalf("unexpected close error on second close: %v", err)
 	}
 	ch.On("a", func() error { return nil })
 	ch.Once("a", func() error { return nil })

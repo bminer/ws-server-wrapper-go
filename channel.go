@@ -12,6 +12,11 @@ import (
 type ClientChannel struct {
 	name   string
 	client *Client
+	closed *bool
+}
+
+func (c ClientChannel) isClosed() bool {
+	return c.client == nil || (c.closed != nil && *c.closed)
 }
 
 // On adds an event handler for the specified event to the channel. When an
@@ -83,7 +88,7 @@ type ClientChannel struct {
 // If On is called multiple times for the same event name, the last handler
 // will be used. If handler is nil, the event handler is removed.
 func (c ClientChannel) On(eventName string, handler any) ClientChannel {
-	if c.client == nil {
+	if c.isClosed() {
 		return c
 	}
 	if err := checkHandler(c.name, eventName, handler); err != nil {
@@ -104,7 +109,7 @@ func (c ClientChannel) On(eventName string, handler any) ClientChannel {
 // See ClientChannel.On for more information about how event handlers are
 // called.
 func (c ClientChannel) Once(eventName string, handler any) ClientChannel {
-	if c.client == nil {
+	if c.isClosed() {
 		return c
 	}
 	if err := checkHandler(c.name, eventName, handler); err != nil {
@@ -121,18 +126,20 @@ func (c ClientChannel) Once(eventName string, handler any) ClientChannel {
 	return c
 }
 
-// Close removes all event handlers for this channel and returns a closed
-// channel value. To keep using the same channel variable, assign the return
-// value (for example: ch = ch.Close()).
-func (c ClientChannel) Close() ClientChannel {
-	if c.client == nil {
-		return c
+// Close removes all event handlers for this channel.
+//
+// Close always returns nil.
+func (c ClientChannel) Close() error {
+	if c.isClosed() {
+		return nil
 	}
 	c.client.handlersMu.Lock()
 	closeHandlersForChannel(c.name, c.client.handlers, c.client.handlersOnce)
 	c.client.handlersMu.Unlock()
-	c.client = nil
-	return c
+	if c.closed != nil {
+		*c.closed = true
+	}
+	return nil
 }
 
 // checkEventName ensures the event name is valid and returns it as a string.
@@ -153,7 +160,7 @@ func checkEventName(arguments []any) (string, error) {
 // call. Returns an error if there was an error sending the message to the
 // client.
 func (c ClientChannel) Emit(ctx context.Context, arguments ...any) error {
-	if c.client == nil {
+	if c.isClosed() {
 		return ChannelClosedError{Channel: c.name}
 	}
 	eventName, err := checkEventName(arguments)
@@ -174,7 +181,7 @@ func (c ClientChannel) Emit(ctx context.Context, arguments ...any) error {
 func (c ClientChannel) Request(
 	ctx context.Context, arguments ...any,
 ) (response any, err error) {
-	if c.client == nil {
+	if c.isClosed() {
 		return nil, ChannelClosedError{Channel: c.name}
 	}
 	eventName, err := checkEventName(arguments)
@@ -201,12 +208,17 @@ func (c ClientChannel) Name() string {
 type ServerChannel struct {
 	name   string
 	server *Server
+	closed *bool
+}
+
+func (c ServerChannel) isClosed() bool {
+	return c.server == nil || (c.closed != nil && *c.closed)
 }
 
 // On adds an event handler for the specified event to the channel. See
 // ClientChannel.On for more information about how event handlers are called.
 func (c ServerChannel) On(eventName string, handler any) ServerChannel {
-	if c.server == nil {
+	if c.isClosed() {
 		return c
 	}
 	if err := checkHandler(c.name, eventName, handler); err != nil {
@@ -227,7 +239,7 @@ func (c ServerChannel) On(eventName string, handler any) ServerChannel {
 // See ClientChannel.On for more information about how event handlers are
 // called.
 func (c ServerChannel) Once(eventName string, handler any) ServerChannel {
-	if c.server == nil {
+	if c.isClosed() {
 		return c
 	}
 	if err := checkHandler(c.name, eventName, handler); err != nil {
@@ -244,18 +256,20 @@ func (c ServerChannel) Once(eventName string, handler any) ServerChannel {
 	return c
 }
 
-// Close removes all event handlers for this channel and returns a closed
-// channel value. To keep using the same channel variable, assign the return
-// value (for example: ch = ch.Close()).
-func (c ServerChannel) Close() ServerChannel {
-	if c.server == nil {
-		return c
+// Close removes all event handlers for this channel.
+//
+// Close always returns nil.
+func (c ServerChannel) Close() error {
+	if c.isClosed() {
+		return nil
 	}
 	c.server.handlersMu.Lock()
 	closeHandlersForChannel(c.name, c.server.handlers, c.server.handlersOnce)
 	c.server.handlersMu.Unlock()
-	c.server = nil
-	return c
+	if c.closed != nil {
+		*c.closed = true
+	}
+	return nil
 }
 
 // Emit sends an event to all clients on the specified channel. The passed
@@ -266,7 +280,7 @@ func (c ServerChannel) Close() ServerChannel {
 func (c ServerChannel) Emit(
 	ctx context.Context, arguments ...any,
 ) (errs []ClientError) {
-	if c.server == nil {
+	if c.isClosed() {
 		errs = append(errs, ClientError{
 			Client: nil,
 			error:  ChannelClosedError{Channel: c.name},
