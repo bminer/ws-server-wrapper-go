@@ -128,7 +128,7 @@ func (c ClientChannel) Once(eventName string, handler any) ClientChannel {
 
 // Close removes all event handlers for this channel.
 //
-// Close always returns nil.
+// Close currently always returns nil.
 func (c ClientChannel) Close() error {
 	if c.isClosed() {
 		return nil
@@ -258,7 +258,7 @@ func (c ServerChannel) Once(eventName string, handler any) ServerChannel {
 
 // Close removes all event handlers for this channel.
 //
-// Close always returns nil.
+// Close currently always returns nil.
 func (c ServerChannel) Close() error {
 	if c.isClosed() {
 		return nil
