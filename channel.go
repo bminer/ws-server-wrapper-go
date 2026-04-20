@@ -14,17 +14,6 @@ type ClientChannel struct {
 	client *Client
 }
 
-func (c *ClientChannel) ensureOpen() error {
-	if c == nil || c.client == nil {
-		name := ""
-		if c != nil {
-			name = c.name
-		}
-		return ChannelClosedError{Channel: name}
-	}
-	return nil
-}
-
 // On adds an event handler for the specified event to the channel. When an
 // event or request is received from a client, only a single handler is called.
 // The priority of handlers called is as follows:
@@ -88,17 +77,17 @@ func (c *ClientChannel) ensureOpen() error {
 //
 //   - "close" or "disconnect" - called when any client disconnects.
 //
-// If event handlers do not conform to the expected function signature, On
-// returns an error.
+// If event handlers do not conform to the expected function signature, On will
+// panic.
 //
 // If On is called multiple times for the same event name, the last handler
 // will be used. If handler is nil, the event handler is removed.
-func (c *ClientChannel) On(eventName string, handler any) error {
-	if err := c.ensureOpen(); err != nil {
-		return err
+func (c ClientChannel) On(eventName string, handler any) ClientChannel {
+	if c.client == nil {
+		return c
 	}
 	if err := checkHandler(c.name, eventName, handler); err != nil {
-		return err
+		panic(err)
 	}
 	key := handlerName{Channel: c.name, Event: eventName}
 	c.client.handlersMu.Lock()
@@ -108,18 +97,18 @@ func (c *ClientChannel) On(eventName string, handler any) error {
 		c.client.handlers[key] = handler
 	}
 	c.client.handlersMu.Unlock()
-	return nil
+	return c
 }
 
 // Once adds a one-time event handler for the specified event to the channel.
 // See ClientChannel.On for more information about how event handlers are
 // called.
-func (c *ClientChannel) Once(eventName string, handler any) error {
-	if err := c.ensureOpen(); err != nil {
-		return err
+func (c ClientChannel) Once(eventName string, handler any) ClientChannel {
+	if c.client == nil {
+		return c
 	}
 	if err := checkHandler(c.name, eventName, handler); err != nil {
-		return err
+		panic(err)
 	}
 	key := handlerName{Channel: c.name, Event: eventName}
 	c.client.handlersMu.Lock()
@@ -129,22 +118,19 @@ func (c *ClientChannel) Once(eventName string, handler any) error {
 		c.client.handlersOnce[key] = handler
 	}
 	c.client.handlersMu.Unlock()
-	return nil
+	return c
 }
 
 // Close removes all event handlers for this channel.
-func (c *ClientChannel) Close() error {
-	if c == nil {
-		return ChannelClosedError{}
-	}
+func (c ClientChannel) Close() ClientChannel {
 	if c.client == nil {
-		return nil
+		return c
 	}
 	c.client.handlersMu.Lock()
 	closeHandlersForChannel(c.name, c.client.handlers, c.client.handlersOnce)
 	c.client.handlersMu.Unlock()
 	c.client = nil
-	return nil
+	return c
 }
 
 // checkEventName ensures the event name is valid and returns it as a string.
@@ -164,9 +150,9 @@ func checkEventName(arguments []any) (string, error) {
 // argument is the event name that tells the remote end which event handler to
 // call. Returns an error if there was an error sending the message to the
 // client.
-func (c *ClientChannel) Emit(ctx context.Context, arguments ...any) error {
-	if err := c.ensureOpen(); err != nil {
-		return err
+func (c ClientChannel) Emit(ctx context.Context, arguments ...any) error {
+	if c.client == nil {
+		return ChannelClosedError{Channel: c.name}
 	}
 	eventName, err := checkEventName(arguments)
 	if err != nil {
@@ -183,11 +169,11 @@ func (c *ClientChannel) Emit(ctx context.Context, arguments ...any) error {
 // Request sends a request to the client and returns the response. The passed
 // context can be used to cancel the request. The second argument is the event
 // name that tells the remote end which request handler to call.
-func (c *ClientChannel) Request(
+func (c ClientChannel) Request(
 	ctx context.Context, arguments ...any,
 ) (response any, err error) {
-	if err := c.ensureOpen(); err != nil {
-		return nil, err
+	if c.client == nil {
+		return nil, ChannelClosedError{Channel: c.name}
 	}
 	eventName, err := checkEventName(arguments)
 	if err != nil {
@@ -202,7 +188,7 @@ func (c *ClientChannel) Request(
 }
 
 // Name returns the name of the channel
-func (c *ClientChannel) Name() string {
+func (c ClientChannel) Name() string {
 	return c.name
 }
 
@@ -215,25 +201,14 @@ type ServerChannel struct {
 	server *Server
 }
 
-func (c *ServerChannel) ensureOpen() error {
-	if c == nil || c.server == nil {
-		name := ""
-		if c != nil {
-			name = c.name
-		}
-		return ChannelClosedError{Channel: name}
-	}
-	return nil
-}
-
 // On adds an event handler for the specified event to the channel. See
 // ClientChannel.On for more information about how event handlers are called.
-func (c *ServerChannel) On(eventName string, handler any) error {
-	if err := c.ensureOpen(); err != nil {
-		return err
+func (c ServerChannel) On(eventName string, handler any) ServerChannel {
+	if c.server == nil {
+		return c
 	}
 	if err := checkHandler(c.name, eventName, handler); err != nil {
-		return err
+		panic(err)
 	}
 	key := handlerName{Channel: c.name, Event: eventName}
 	c.server.handlersMu.Lock()
@@ -243,18 +218,18 @@ func (c *ServerChannel) On(eventName string, handler any) error {
 		c.server.handlers[key] = handler
 	}
 	c.server.handlersMu.Unlock()
-	return nil
+	return c
 }
 
 // Once adds a one-time event handler for the specified event to the channel.
 // See ClientChannel.On for more information about how event handlers are
 // called.
-func (c *ServerChannel) Once(eventName string, handler any) error {
-	if err := c.ensureOpen(); err != nil {
-		return err
+func (c ServerChannel) Once(eventName string, handler any) ServerChannel {
+	if c.server == nil {
+		return c
 	}
 	if err := checkHandler(c.name, eventName, handler); err != nil {
-		return err
+		panic(err)
 	}
 	key := handlerName{Channel: c.name, Event: eventName}
 	c.server.handlersMu.Lock()
@@ -264,22 +239,19 @@ func (c *ServerChannel) Once(eventName string, handler any) error {
 		c.server.handlersOnce[key] = handler
 	}
 	c.server.handlersMu.Unlock()
-	return nil
+	return c
 }
 
 // Close removes all event handlers for this channel.
-func (c *ServerChannel) Close() error {
-	if c == nil {
-		return ChannelClosedError{}
-	}
+func (c ServerChannel) Close() ServerChannel {
 	if c.server == nil {
-		return nil
+		return c
 	}
 	c.server.handlersMu.Lock()
 	closeHandlersForChannel(c.name, c.server.handlers, c.server.handlersOnce)
 	c.server.handlersMu.Unlock()
 	c.server = nil
-	return nil
+	return c
 }
 
 // Emit sends an event to all clients on the specified channel. The passed
@@ -287,11 +259,14 @@ func (c *ServerChannel) Close() error {
 // argument is the event name that tells the remote end which event handler to
 // call. Returns a slice of ClientErrors that contains an entry if an error
 // occurred when sending the message to a specific client.
-func (c *ServerChannel) Emit(
+func (c ServerChannel) Emit(
 	ctx context.Context, arguments ...any,
 ) (errs []ClientError) {
-	if err := c.ensureOpen(); err != nil {
-		errs = append(errs, ClientError{error: err})
+	if c.server == nil {
+		errs = append(errs, ClientError{
+			Client: nil,
+			error:  ChannelClosedError{Channel: c.name},
+		})
 		return
 	}
 	eventName, err := checkEventName(arguments)
@@ -321,6 +296,6 @@ func (c *ServerChannel) Emit(
 }
 
 // Name returns the name of the channel
-func (c *ServerChannel) Name() string {
+func (c ServerChannel) Name() string {
 	return c.name
 }
