@@ -30,6 +30,7 @@ func NewServer() *Server {
 	}
 	// set reference back to client, so channel methods work properly
 	s.ServerChannel.server = s
+	s.ServerChannel.closed = newClosedFlag()
 	return s
 }
 
@@ -81,11 +82,10 @@ func (s *Server) Close() error {
 
 // Of returns a channel for the given name
 func (s *Server) Of(name string) ServerChannel {
-	closed := false
 	return ServerChannel{
 		name:   name,
 		server: s,
-		closed: &closed,
+		closed: newClosedFlag(),
 	}
 }
 

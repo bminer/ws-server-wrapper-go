@@ -64,6 +64,7 @@ func NewClient(conn Conn) *Client {
 	}
 	// Set channel reference back to client, so channel methods work properly
 	c.ClientChannel.client = c
+	c.ClientChannel.closed = newClosedFlag()
 
 	// Optionally bind the connection
 	if conn != nil {
@@ -206,11 +207,10 @@ func (c *Client) Set(key string, value any) {
 
 // Of returns a channel for the given name
 func (c *Client) Of(name string) ClientChannel {
-	closed := false
 	return ClientChannel{
 		name:   name,
 		client: c,
-		closed: &closed,
+		closed: newClosedFlag(),
 	}
 }
 

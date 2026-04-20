@@ -3,6 +3,7 @@ package wrapper
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 )
 
 // ClientChannel is a channel on which events can be sent and received. Events
@@ -12,11 +13,15 @@ import (
 type ClientChannel struct {
 	name   string
 	client *Client
-	closed *bool
+	closed *atomic.Bool
 }
 
 func (c ClientChannel) isClosed() bool {
-	return c.client == nil || (c.closed != nil && *c.closed)
+	return c.client == nil || c.closed.Load()
+}
+
+func newClosedFlag() *atomic.Bool {
+	return &atomic.Bool{}
 }
 
 // On adds an event handler for the specified event to the channel. When an
@@ -128,17 +133,14 @@ func (c ClientChannel) Once(eventName string, handler any) ClientChannel {
 
 // Close removes all event handlers for this channel.
 //
-// Close currently always returns nil.
+// Close returns nil.
 func (c ClientChannel) Close() error {
-	if c.isClosed() {
+	if c.client == nil || !c.closed.CompareAndSwap(false, true) {
 		return nil
 	}
 	c.client.handlersMu.Lock()
 	closeHandlersForChannel(c.name, c.client.handlers, c.client.handlersOnce)
 	c.client.handlersMu.Unlock()
-	if c.closed != nil {
-		*c.closed = true
-	}
 	return nil
 }
 
@@ -208,11 +210,11 @@ func (c ClientChannel) Name() string {
 type ServerChannel struct {
 	name   string
 	server *Server
-	closed *bool
+	closed *atomic.Bool
 }
 
 func (c ServerChannel) isClosed() bool {
-	return c.server == nil || (c.closed != nil && *c.closed)
+	return c.server == nil || c.closed.Load()
 }
 
 // On adds an event handler for the specified event to the channel. See
@@ -258,17 +260,14 @@ func (c ServerChannel) Once(eventName string, handler any) ServerChannel {
 
 // Close removes all event handlers for this channel.
 //
-// Close currently always returns nil.
+// Close returns nil.
 func (c ServerChannel) Close() error {
-	if c.isClosed() {
+	if c.server == nil || !c.closed.CompareAndSwap(false, true) {
 		return nil
 	}
 	c.server.handlersMu.Lock()
 	closeHandlersForChannel(c.name, c.server.handlers, c.server.handlersOnce)
 	c.server.handlersMu.Unlock()
-	if c.closed != nil {
-		*c.closed = true
-	}
 	return nil
 }
 
