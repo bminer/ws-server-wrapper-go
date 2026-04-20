@@ -121,7 +121,9 @@ func (c ClientChannel) Once(eventName string, handler any) ClientChannel {
 	return c
 }
 
-// Close removes all event handlers for this channel.
+// Close removes all event handlers for this channel and returns a closed
+// channel value. To keep using the same channel variable, assign the return
+// value (for example: ch = ch.Close()).
 func (c ClientChannel) Close() ClientChannel {
 	if c.client == nil {
 		return c
@@ -242,7 +244,9 @@ func (c ServerChannel) Once(eventName string, handler any) ServerChannel {
 	return c
 }
 
-// Close removes all event handlers for this channel.
+// Close removes all event handlers for this channel and returns a closed
+// channel value. To keep using the same channel variable, assign the return
+// value (for example: ch = ch.Close()).
 func (c ServerChannel) Close() ServerChannel {
 	if c.server == nil {
 		return c
