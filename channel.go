@@ -84,7 +84,7 @@ type ClientChannel struct {
 // will be used. If handler is nil, the event handler is removed.
 func (c ClientChannel) On(eventName string, handler any) ClientChannel {
 	if c.client == nil {
-		return c
+		return c // channel closed; do nothing
 	}
 	if err := checkHandler(c.name, eventName, handler); err != nil {
 		panic(err)
@@ -105,7 +105,7 @@ func (c ClientChannel) On(eventName string, handler any) ClientChannel {
 // called.
 func (c ClientChannel) Once(eventName string, handler any) ClientChannel {
 	if c.client == nil {
-		return c
+		return c // channel closed; do nothing
 	}
 	if err := checkHandler(c.name, eventName, handler); err != nil {
 		panic(err)
