@@ -244,9 +244,11 @@ func (c *Client) sendCancel(ctx context.Context, requestID *int, reason error) e
 		reason = errors.New("Request aborted")
 	}
 	c.connReqMu.Lock()
+	_, ok := c.requestResponseCh[*requestID]
+	delete(c.requestResponseCh, *requestID)
 	conn := c.conn
 	c.connReqMu.Unlock()
-	if conn == nil {
+	if !ok || conn == nil {
 		return nil // ignore message if connection is closed
 	}
 	return conn.WriteMessage(ctx, &Message{
@@ -359,14 +361,7 @@ func (c *Client) sendRequest(
 		return nil, fmt.Errorf("awaiting response: %w", context.Cause(ctxClient))
 	case <-ctx.Done():
 		cancelCause := context.Cause(ctx)
-		c.connReqMu.Lock()
-		_, ok := c.requestResponseCh[requestID]
-		delete(c.requestResponseCh, requestID)
-		conn := c.conn
-		c.connReqMu.Unlock()
-		if ok && conn != nil {
-			_ = c.sendCancel(ctxClient, &requestID, cancelCause)
-		}
+		_ = c.sendCancel(ctxClient, &requestID, cancelCause)
 		return nil, fmt.Errorf("awaiting response: %w", cancelCause)
 	}
 }
