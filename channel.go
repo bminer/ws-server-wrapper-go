@@ -207,7 +207,7 @@ type ServerChannel struct {
 // ClientChannel.On for more information about how event handlers are called.
 func (c ServerChannel) On(eventName string, handler any) ServerChannel {
 	if c.server == nil {
-		return c
+		return c // channel closed; do nothing
 	}
 	if err := checkHandler(c.name, eventName, handler); err != nil {
 		panic(err)
@@ -228,7 +228,7 @@ func (c ServerChannel) On(eventName string, handler any) ServerChannel {
 // called.
 func (c ServerChannel) Once(eventName string, handler any) ServerChannel {
 	if c.server == nil {
-		return c
+		return c // channel closed; do nothing
 	}
 	if err := checkHandler(c.name, eventName, handler); err != nil {
 		panic(err)
