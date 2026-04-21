@@ -252,26 +252,6 @@ func (c *Client) sendResolve(ctx context.Context, requestID *int, data any) erro
 	})
 }
 
-// sendCancel sends a cancellation signal for a pending request.
-func (c *Client) sendCancel(ctx context.Context, requestID *int, reason error) error {
-	if requestID == nil {
-		return fmt.Errorf("requestID is required")
-	}
-	c.connReqMu.Lock()
-	conn := c.conn
-	c.connReqMu.Unlock()
-	if conn == nil {
-		return nil // ignore message if connection is closed
-	}
-	if reason == nil {
-		reason = context.Canceled
-	}
-	return conn.WriteMessage(ctx, &Message{
-		RequestID:    requestID,
-		CancelReason: reason.Error(),
-	})
-}
-
 // sendEvent sends an event to the client
 func (c *Client) sendEvent(ctx context.Context, channel string, arguments ...any) error {
 	c.connReqMu.Lock()
@@ -354,16 +334,19 @@ func (c *Client) sendRequest(
 	case <-ctxClient.Done():
 		return nil, fmt.Errorf("awaiting response: %w", context.Cause(ctxClient))
 	case <-ctx.Done():
+		cancelCause := context.Cause(ctx)
 		c.connReqMu.Lock()
 		_, ok := c.requestResponseCh[requestID]
-		if ok {
-			delete(c.requestResponseCh, requestID)
-		}
+		delete(c.requestResponseCh, requestID)
+		conn := c.conn
 		c.connReqMu.Unlock()
-		if ok {
-			_ = c.sendCancel(ctxClient, &requestID, context.Cause(ctx))
+		if ok && conn != nil {
+			_ = conn.WriteMessage(ctxClient, &Message{
+				RequestID:    &requestID,
+				CancelReason: cancelCause.Error(),
+			})
 		}
-		return nil, fmt.Errorf("awaiting response: %w", context.Cause(ctx))
+		return nil, fmt.Errorf("awaiting response: %w", cancelCause)
 	}
 }
 
