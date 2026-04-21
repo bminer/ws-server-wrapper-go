@@ -80,8 +80,8 @@ func (s *Server) Close() error {
 }
 
 // Of returns a channel for the given name
-func (s *Server) Of(name string) *ServerChannel {
-	return &ServerChannel{
+func (s *Server) Of(name string) ServerChannel {
+	return ServerChannel{
 		name:   name,
 		server: s,
 	}

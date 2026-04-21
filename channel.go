@@ -83,6 +83,9 @@ type ClientChannel struct {
 // If On is called multiple times for the same event name, the last handler
 // will be used. If handler is nil, the event handler is removed.
 func (c ClientChannel) On(eventName string, handler any) ClientChannel {
+	if c.client == nil {
+		return c // channel closed; do nothing
+	}
 	if err := checkHandler(c.name, eventName, handler); err != nil {
 		panic(err)
 	}
@@ -101,6 +104,9 @@ func (c ClientChannel) On(eventName string, handler any) ClientChannel {
 // See ClientChannel.On for more information about how event handlers are
 // called.
 func (c ClientChannel) Once(eventName string, handler any) ClientChannel {
+	if c.client == nil {
+		return c // channel closed; do nothing
+	}
 	if err := checkHandler(c.name, eventName, handler); err != nil {
 		panic(err)
 	}
@@ -113,6 +119,21 @@ func (c ClientChannel) Once(eventName string, handler any) ClientChannel {
 	}
 	c.client.handlersMu.Unlock()
 	return c
+}
+
+// Close removes all event handlers for this channel.
+//
+// Close returns nil.
+func (c *ClientChannel) Close() error {
+	cl := c.client
+	if cl == nil {
+		return nil // channel closed already
+	}
+	c.client = nil
+	cl.handlersMu.Lock()
+	closeHandlersForChannel(c.name, cl.handlers, cl.handlersOnce)
+	cl.handlersMu.Unlock()
+	return nil
 }
 
 // checkEventName ensures the event name is valid and returns it as a string.
@@ -133,6 +154,9 @@ func checkEventName(arguments []any) (string, error) {
 // call. Returns an error if there was an error sending the message to the
 // client.
 func (c ClientChannel) Emit(ctx context.Context, arguments ...any) error {
+	if c.client == nil {
+		return ChannelClosedError{Channel: c.name}
+	}
 	eventName, err := checkEventName(arguments)
 	if err != nil {
 		return err
@@ -151,6 +175,9 @@ func (c ClientChannel) Emit(ctx context.Context, arguments ...any) error {
 func (c ClientChannel) Request(
 	ctx context.Context, arguments ...any,
 ) (response any, err error) {
+	if c.client == nil {
+		return nil, ChannelClosedError{Channel: c.name}
+	}
 	eventName, err := checkEventName(arguments)
 	if err != nil {
 		return nil, err
@@ -180,6 +207,9 @@ type ServerChannel struct {
 // On adds an event handler for the specified event to the channel. See
 // ClientChannel.On for more information about how event handlers are called.
 func (c ServerChannel) On(eventName string, handler any) ServerChannel {
+	if c.server == nil {
+		return c // channel closed; do nothing
+	}
 	if err := checkHandler(c.name, eventName, handler); err != nil {
 		panic(err)
 	}
@@ -198,6 +228,9 @@ func (c ServerChannel) On(eventName string, handler any) ServerChannel {
 // See ClientChannel.On for more information about how event handlers are
 // called.
 func (c ServerChannel) Once(eventName string, handler any) ServerChannel {
+	if c.server == nil {
+		return c // channel closed; do nothing
+	}
 	if err := checkHandler(c.name, eventName, handler); err != nil {
 		panic(err)
 	}
@@ -212,6 +245,21 @@ func (c ServerChannel) Once(eventName string, handler any) ServerChannel {
 	return c
 }
 
+// Close removes all event handlers for this channel.
+//
+// Close returns nil.
+func (c *ServerChannel) Close() error {
+	s := c.server
+	if s == nil {
+		return nil // channel already closed
+	}
+	c.server = nil
+	s.handlersMu.Lock()
+	closeHandlersForChannel(c.name, s.handlers, s.handlersOnce)
+	s.handlersMu.Unlock()
+	return nil
+}
+
 // Emit sends an event to all clients on the specified channel. The passed
 // context can be used to cancel writing the message to the client. The second
 // argument is the event name that tells the remote end which event handler to
@@ -220,6 +268,13 @@ func (c ServerChannel) Once(eventName string, handler any) ServerChannel {
 func (c ServerChannel) Emit(
 	ctx context.Context, arguments ...any,
 ) (errs []ClientError) {
+	if c.server == nil {
+		errs = append(errs, ClientError{
+			Client: nil,
+			error:  ChannelClosedError{Channel: c.name},
+		})
+		return
+	}
 	eventName, err := checkEventName(arguments)
 	if err != nil {
 		errs = append(errs, ClientError{Client: nil, error: err})

@@ -173,6 +173,25 @@ func emitReserved(
 	return called
 }
 
+// closeHandlersForChannel removes all handlers registered for the given
+// channel from both persistent and one-time handler maps.
+func closeHandlersForChannel(
+	channel string,
+	handlers map[handlerName]any,
+	handlersOnce map[handlerName]any,
+) {
+	for key := range handlers {
+		if key.Channel == channel {
+			delete(handlers, key)
+		}
+	}
+	for key := range handlersOnce {
+		if key.Channel == channel {
+			delete(handlersOnce, key)
+		}
+	}
+}
+
 // checkHandler ensures that reserved event handlers have the proper function
 // signature
 func checkHandler(channel, eventName string, handler any) error {

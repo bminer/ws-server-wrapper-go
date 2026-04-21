@@ -3,6 +3,7 @@ package wrapper
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"testing"
@@ -244,5 +245,107 @@ func TestCheckHandler(t *testing.T) {
 	h = func() (string, string) { return "", "" }
 	if err := checkHandler("", "custom", h); err == nil {
 		t.Error("expected error for handler with wrong return type")
+	}
+}
+
+func TestClientChannelCloseRemovesChannelHandlers(t *testing.T) {
+	client := NewClient(nil)
+
+	client.Of("room").On("a", func() error { return nil })
+	client.Of("room").Once("b", func() error { return nil })
+	client.Of("other").On("a", func() error { return nil })
+
+	room := client.Of("room")
+	if err := room.Close(); err != nil {
+		t.Fatalf("unexpected close error: %v", err)
+	}
+
+	if _, ok := client.handlers[handlerName{Channel: "room", Event: "a"}]; ok {
+		t.Fatal("expected persistent room handler to be removed")
+	}
+	if _, ok := client.handlersOnce[handlerName{Channel: "room", Event: "b"}]; ok {
+		t.Fatal("expected once room handler to be removed")
+	}
+	if _, ok := client.handlers[handlerName{Channel: "other", Event: "a"}]; !ok {
+		t.Fatal("expected handlers for other channels to be preserved")
+	}
+}
+
+func TestServerChannelCloseRemovesChannelHandlers(t *testing.T) {
+	server := NewServer()
+
+	server.Of("room").On("a", func() error { return nil })
+	server.Of("room").Once("b", func() error { return nil })
+	server.Of("other").On("a", func() error { return nil })
+
+	room := server.Of("room")
+	if err := room.Close(); err != nil {
+		t.Fatalf("unexpected close error: %v", err)
+	}
+
+	if _, ok := server.handlers[handlerName{Channel: "room", Event: "a"}]; ok {
+		t.Fatal("expected persistent room handler to be removed")
+	}
+	if _, ok := server.handlersOnce[handlerName{Channel: "room", Event: "b"}]; ok {
+		t.Fatal("expected once room handler to be removed")
+	}
+	if _, ok := server.handlers[handlerName{Channel: "other", Event: "a"}]; !ok {
+		t.Fatal("expected handlers for other channels to be preserved")
+	}
+}
+
+func TestClientChannelCloseMarksChannelClosed(t *testing.T) {
+	client := NewClient(nil)
+	ch := client.Of("room")
+	if ch.client == nil {
+		t.Fatal("expected open channel to reference a client")
+	}
+	if err := ch.Close(); err != nil {
+		t.Fatalf("unexpected close error: %v", err)
+	}
+	if err := ch.Close(); err != nil {
+		t.Fatalf("unexpected close error on second close: %v", err)
+	}
+	ch.On("a", func() error { return nil })
+	ch.Once("a", func() error { return nil })
+	if err := ch.Emit(context.Background(), "a"); err == nil {
+		t.Fatal("expected closed-channel error from Emit")
+	} else {
+		var cerr ChannelClosedError
+		if !errors.As(err, &cerr) {
+			t.Fatalf("expected ChannelClosedError, got %T", err)
+		}
+	}
+	if _, err := ch.Request(context.Background(), "a"); err == nil {
+		t.Fatal("expected closed-channel error from Request")
+	} else {
+		var cerr ChannelClosedError
+		if !errors.As(err, &cerr) {
+			t.Fatalf("expected ChannelClosedError, got %T", err)
+		}
+	}
+}
+
+func TestServerChannelCloseMarksChannelClosed(t *testing.T) {
+	server := NewServer()
+	ch := server.Of("room")
+	if ch.server == nil {
+		t.Fatal("expected open channel to reference a server")
+	}
+	if err := ch.Close(); err != nil {
+		t.Fatalf("unexpected close error: %v", err)
+	}
+	if err := ch.Close(); err != nil {
+		t.Fatalf("unexpected close error on second close: %v", err)
+	}
+	ch.On("a", func() error { return nil })
+	ch.Once("a", func() error { return nil })
+	if errs := ch.Emit(context.Background(), "a"); len(errs) == 0 {
+		t.Fatal("expected closed-channel error from Emit")
+	} else {
+		var cerr ChannelClosedError
+		if !errors.As(errs[0], &cerr) {
+			t.Fatalf("expected ChannelClosedError, got %T", errs[0])
+		}
 	}
 }
