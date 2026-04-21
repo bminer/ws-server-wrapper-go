@@ -124,9 +124,9 @@ func (c ClientChannel) Once(eventName string, handler any) ClientChannel {
 // Close removes all event handlers for this channel.
 //
 // Close returns nil.
-func (c *ClientChannel) Close() error {
-	if c == nil || c.client == nil {
-		return nil
+func (c ClientChannel) Close() error {
+	if c.client == nil {
+		return nil // channel closed already
 	}
 	c.client.handlersMu.Lock()
 	closeHandlersForChannel(c.name, c.client.handlers, c.client.handlersOnce)
