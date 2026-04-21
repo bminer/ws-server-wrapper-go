@@ -3,6 +3,7 @@ package wrapper
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"reflect"
@@ -224,6 +225,50 @@ func TestEchoRequest(t *testing.T) {
 	}
 	if resp.ResponseData != "echo: hello" {
 		t.Fatalf("expected response data 'echo: hello', got %v", resp.ResponseData)
+	}
+
+	conn.Close(StatusNormalClosure, "done")
+}
+
+// TestRequestCancellationSendsCancelMessage verifies that when an outbound
+// request context is cancelled while the request is pending, a protocol
+// cancellation message is sent to the remote.
+func TestRequestCancellationSendsCancelMessage(t *testing.T) {
+	client := NewClient(nil)
+	conn := newMockConn()
+	client.Bind(conn)
+
+	ctx, cancel := context.WithCancelCause(context.Background())
+	reqErr := make(chan error, 1)
+	go func() {
+		_, err := client.Request(ctx, "slow")
+		reqErr <- err
+	}()
+
+	request := conn.waitWritten(t, time.Second)
+	if request.RequestID == nil {
+		t.Fatalf("expected request with ID, got %+v", request)
+	}
+
+	cancelCause := errors.New("user aborted")
+	cancel(cancelCause)
+
+	cancelMsg := conn.waitWritten(t, time.Second)
+	if cancelMsg.RequestID == nil || *cancelMsg.RequestID != *request.RequestID {
+		t.Fatalf("expected cancellation for request %d, got %+v",
+			*request.RequestID, cancelMsg)
+	}
+	if got, ok := cancelMsg.CancelReason.(string); !ok || got != cancelCause.Error() {
+		t.Fatalf("expected cancel reason %q, got %v", cancelCause.Error(), cancelMsg.CancelReason)
+	}
+
+	select {
+	case err := <-reqErr:
+		if err == nil || err.Error() != "awaiting response: user aborted" {
+			t.Fatalf("expected context cancellation error, got %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for request cancellation error")
 	}
 
 	conn.Close(StatusNormalClosure, "done")
