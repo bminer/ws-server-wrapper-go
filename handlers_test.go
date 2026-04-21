@@ -255,7 +255,10 @@ func TestClientChannelCloseRemovesChannelHandlers(t *testing.T) {
 	client.Of("room").Once("b", func() error { return nil })
 	client.Of("other").On("a", func() error { return nil })
 
-	client.Of("room").Close()
+	room := client.Of("room")
+	if err := room.Close(); err != nil {
+		t.Fatalf("unexpected close error: %v", err)
+	}
 
 	if _, ok := client.handlers[handlerName{Channel: "room", Event: "a"}]; ok {
 		t.Fatal("expected persistent room handler to be removed")
@@ -275,7 +278,10 @@ func TestServerChannelCloseRemovesChannelHandlers(t *testing.T) {
 	server.Of("room").Once("b", func() error { return nil })
 	server.Of("other").On("a", func() error { return nil })
 
-	server.Of("room").Close()
+	room := server.Of("room")
+	if err := room.Close(); err != nil {
+		t.Fatalf("unexpected close error: %v", err)
+	}
 
 	if _, ok := server.handlers[handlerName{Channel: "room", Event: "a"}]; ok {
 		t.Fatal("expected persistent room handler to be removed")

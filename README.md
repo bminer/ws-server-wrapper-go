@@ -104,7 +104,8 @@ wsServer.Of("io").On("readFile", func(filename string) ([]byte, error) {
 })
 
 // Remove all handlers on a channel when it is no longer needed.
-_ = wsServer.Of("io").Close()
+ioChannel := wsServer.Of("io")
+_ = ioChannel.Close()
 ```
 
 ## Per-Client Handlers

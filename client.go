@@ -64,7 +64,6 @@ func NewClient(conn Conn) *Client {
 	}
 	// Set channel reference back to client, so channel methods work properly
 	c.ClientChannel.client = c
-	c.ClientChannel.closed = newClosedFlag()
 
 	// Optionally bind the connection
 	if conn != nil {
@@ -210,7 +209,6 @@ func (c *Client) Of(name string) ClientChannel {
 	return ClientChannel{
 		name:   name,
 		client: c,
-		closed: newClosedFlag(),
 	}
 }
 

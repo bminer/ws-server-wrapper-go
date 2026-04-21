@@ -30,7 +30,6 @@ func NewServer() *Server {
 	}
 	// set reference back to client, so channel methods work properly
 	s.ServerChannel.server = s
-	s.ServerChannel.closed = newClosedFlag()
 	return s
 }
 
@@ -85,7 +84,6 @@ func (s *Server) Of(name string) ServerChannel {
 	return ServerChannel{
 		name:   name,
 		server: s,
-		closed: newClosedFlag(),
 	}
 }
 
