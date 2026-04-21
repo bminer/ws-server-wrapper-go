@@ -125,13 +125,14 @@ func (c ClientChannel) Once(eventName string, handler any) ClientChannel {
 //
 // Close returns nil.
 func (c ClientChannel) Close() error {
-	if c.client == nil {
+	cl := c.client
+	if cl == nil {
 		return nil // channel closed already
 	}
-	c.client.handlersMu.Lock()
-	closeHandlersForChannel(c.name, c.client.handlers, c.client.handlersOnce)
-	c.client.handlersMu.Unlock()
 	c.client = nil
+	cl.handlersMu.Lock()
+	closeHandlersForChannel(c.name, cl.handlers, cl.handlersOnce)
+	cl.handlersMu.Unlock()
 	return nil
 }
 
@@ -247,14 +248,15 @@ func (c ServerChannel) Once(eventName string, handler any) ServerChannel {
 // Close removes all event handlers for this channel.
 //
 // Close returns nil.
-func (c *ServerChannel) Close() error {
-	if c == nil || c.server == nil {
-		return nil
+func (c ServerChannel) Close() error {
+	s := c.server
+	if s == nil {
+		return nil // channel already closed
 	}
-	c.server.handlersMu.Lock()
-	closeHandlersForChannel(c.name, c.server.handlers, c.server.handlersOnce)
-	c.server.handlersMu.Unlock()
 	c.server = nil
+	s.handlersMu.Lock()
+	closeHandlersForChannel(c.name, s.handlers, s.handlersOnce)
+	s.handlersMu.Unlock()
 	return nil
 }
 
