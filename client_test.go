@@ -258,8 +258,11 @@ func TestRequestCancellationSendsCancelMessage(t *testing.T) {
 		t.Fatalf("expected cancellation for request %d, got %+v",
 			*request.RequestID, cancelMsg)
 	}
-	if got, ok := cancelMsg.CancelReason.(string); !ok || got != cancelCause.Error() {
-		t.Fatalf("expected cancel reason %q, got %v", cancelCause.Error(), cancelMsg.CancelReason)
+	if !cancelMsg.ResponseJSError {
+		t.Fatal("expected cancellation encoded as JS error")
+	}
+	if exp := map[string]any{"message": cancelCause.Error()}; !reflect.DeepEqual(exp, cancelMsg.CancelReason) {
+		t.Fatalf("expected cancel reason %v, got %v", exp, cancelMsg.CancelReason)
 	}
 
 	select {
@@ -269,6 +272,30 @@ func TestRequestCancellationSendsCancelMessage(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for request cancellation error")
+	}
+
+	conn.Close(StatusNormalClosure, "done")
+}
+
+func TestSendCancel_DefaultReason(t *testing.T) {
+	client := NewClient(nil)
+	conn := newMockConn()
+	client.Bind(conn)
+
+	reqID := 42
+	if err := client.sendCancel(context.Background(), &reqID, nil); err != nil {
+		t.Fatalf("sendCancel returned error: %v", err)
+	}
+
+	msg := conn.waitWritten(t, time.Second)
+	if msg.RequestID == nil || *msg.RequestID != reqID {
+		t.Fatalf("expected request ID %d, got %+v", reqID, msg)
+	}
+	if !msg.ResponseJSError {
+		t.Fatal("expected cancellation encoded as JS error")
+	}
+	if exp := map[string]any{"message": "Request aborted"}; !reflect.DeepEqual(exp, msg.CancelReason) {
+		t.Fatalf("expected cancel reason %v, got %v", exp, msg.CancelReason)
 	}
 
 	conn.Close(StatusNormalClosure, "done")
