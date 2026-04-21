@@ -263,13 +263,12 @@ func (c *Client) sendCancel(ctx context.Context, requestID *int, reason error) e
 	if conn == nil {
 		return nil // ignore message if connection is closed
 	}
-	cancelReason := context.Canceled.Error()
-	if reason != nil {
-		cancelReason = reason.Error()
+	if reason == nil {
+		reason = context.Canceled
 	}
 	return conn.WriteMessage(ctx, &Message{
 		RequestID:    requestID,
-		CancelReason: cancelReason,
+		CancelReason: reason.Error(),
 	})
 }
 

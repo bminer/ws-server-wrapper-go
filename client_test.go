@@ -264,7 +264,7 @@ func TestRequestCancellationSendsCancelMessage(t *testing.T) {
 
 	select {
 	case err := <-reqErr:
-		if err == nil || err.Error() != "awaiting response: user aborted" {
+		if !errors.Is(err, cancelCause) {
 			t.Fatalf("expected context cancellation error, got %v", err)
 		}
 	case <-time.After(time.Second):
