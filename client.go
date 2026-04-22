@@ -253,7 +253,8 @@ func (c *Client) sendCancel(
 	conn := c.conn
 	c.connReqMu.Unlock()
 	if !ok || conn == nil {
-		return nil // ignore message if connection is closed
+		// request complete or connection closed
+		return nil
 	}
 	return conn.WriteMessage(ctx, &Message{
 		RequestID: requestID,
