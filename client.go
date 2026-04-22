@@ -236,7 +236,11 @@ func (c *Client) sendReject(ctx context.Context, requestID *int, err error) erro
 }
 
 // sendCancel sends a cancellation signal for a request
-func (c *Client) sendCancel(ctx context.Context, requestID *int, reason error) error {
+func (c *Client) sendCancel(
+	ctx context.Context,
+	requestID *int,
+	reason error,
+) error {
 	if requestID == nil {
 		return fmt.Errorf("requestID is required")
 	}
