@@ -235,6 +235,37 @@ func (c *Client) sendReject(ctx context.Context, requestID *int, err error) erro
 	})
 }
 
+// sendCancel sends a cancellation signal for a request
+func (c *Client) sendCancel(
+	ctx context.Context,
+	requestID *int,
+	reason error,
+) error {
+	if requestID == nil {
+		return fmt.Errorf("requestID is required")
+	}
+	if reason == nil {
+		reason = errors.New("Request aborted")
+	}
+	c.connReqMu.Lock()
+	_, ok := c.requestResponseCh[*requestID]
+	delete(c.requestResponseCh, *requestID)
+	conn := c.conn
+	c.connReqMu.Unlock()
+	if !ok || conn == nil {
+		// request complete or connection closed
+		return nil
+	}
+	return conn.WriteMessage(ctx, &Message{
+		RequestID: requestID,
+		// Write as JS error
+		ResponseJSError: true,
+		CancelReason: map[string]any{
+			"message": reason.Error(),
+		},
+	})
+}
+
 // sendResolve sends a resolve / data response to a request
 func (c *Client) sendResolve(ctx context.Context, requestID *int, data any) error {
 	if requestID == nil {
@@ -334,7 +365,9 @@ func (c *Client) sendRequest(
 	case <-ctxClient.Done():
 		return nil, fmt.Errorf("awaiting response: %w", context.Cause(ctxClient))
 	case <-ctx.Done():
-		return nil, fmt.Errorf("awaiting response: %w", context.Cause(ctx))
+		cancelCause := context.Cause(ctx)
+		_ = c.sendCancel(ctxClient, &requestID, cancelCause)
+		return nil, fmt.Errorf("awaiting response: %w", cancelCause)
 	}
 }
 
