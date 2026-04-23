@@ -34,6 +34,11 @@ Current ws-wrapper compatibility: **v4.1**.
 - Request rejections are encoded as JavaScript errors for ws-wrapper v4 compatibility.
 - `HandlerContextFunc` now returns `Context` only.
 
+### Fixed
+
+- Fixed a rare race condition while client connections read messages.
+- Fixed `Message.ResponseJSError` JSON parsing.
+
 ## [1.3.0] - 2025-10-02
 
 ### Changed
@@ -41,11 +46,23 @@ Current ws-wrapper compatibility: **v4.1**.
 - Deferred JSON decoding of message arguments until handler invocation (`[]json.RawMessage`) so values can decode directly into event-handler parameter types (instead of first decoding object values as `map[string]any`).
 - Updated dependencies.
 
+### Fixed
+
+- Fixed a bug in `ClientError.Error()`.
+
 ## [1.2.0] - 2025-05-02
 
 ### Added
 
 - Added `Message.Processed`, a Go channel closed after a message is processed (useful for timing/synchronizing handler execution).
+
+### Changed
+
+- Improved event handler invocation behavior: nil interface-typed arguments are accepted when appropriate, and pointer-typed parameters are decoded correctly.
+
+### Fixed
+
+- Cleaned up request-response channels when sending a request fails.
 
 ## [1.1.0] - 2025-03-25
 
