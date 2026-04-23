@@ -5,17 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+Current ws-wrapper compatibility: **v4.1**.
+
 ## [Unreleased]
 
-### Changed
-
 - No unreleased library changes yet.
-- Tracking [ws-wrapper](https://github.com/bminer/ws-wrapper) **v4.1** compatibility:
-  - Named events
-  - Request / response
-  - Channels
-  - Cancellation signals (`x` payload)
-  - JavaScript error response encoding (`e` + `_`)
 
 ## [1.5.0] - 2026-04-22
 
@@ -40,34 +34,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Request rejections are encoded as JavaScript errors for ws-wrapper v4 compatibility.
 - `HandlerContextFunc` now returns `Context` only.
 
-### Fixed
-
-- Fixed multiple bugs.
-
 ## [1.3.0] - 2025-10-02
 
 ### Changed
 
-- Deferred JSON decoding of message arguments until handler invocation (`[]json.RawMessage`), improving type-directed decoding and performance in many cases.
+- Deferred JSON decoding of message arguments until handler invocation (`[]json.RawMessage`) so values can decode directly into event-handler parameter types (instead of first decoding object values as `map[string]any`).
 - Updated dependencies.
-
-### Fixed
-
-- Fixed bugs and linter issues.
 
 ## [1.2.0] - 2025-05-02
 
 ### Added
 
-- Added `Message.Processed`.
-
-### Changed
-
-- Improved event handler invocations.
-
-### Fixed
-
-- Fixed multiple bugs.
+- Added `Message.Processed`, a Go channel closed after a message is processed (useful for timing/synchronizing handler execution).
 
 ## [1.1.0] - 2025-03-25
 
