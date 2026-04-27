@@ -17,19 +17,18 @@ var errRebound = errors.New("client bound to new connection")
 // Client represents a WebSocket client
 type Client struct {
 	ClientChannel                     // the "main" client channel with no name
-	connReqMu         sync.Mutex      // protects Context, Conn, and request stuff
+	connReqMu         sync.Mutex      // protects Context, Conn, requests, and anonChans
 	ctx               context.Context // cancelled when the connection is closed
 	ctxCancel         func(error)     // called when the connection is closed
 	conn              Conn            // WebSocket connection; set `nil` on close
 	requestID         int             // auto-incrementing request ID
 	requestResponseCh map[int]chan messageResponse
+	anonChans         map[string]*AnonymousChannel
 	inboundCancelsMu  sync.Mutex
 	inboundCancels    map[int]func(error) // cancel funcs for inbound requests
-	handlersMu        sync.Mutex
+	handlersMu        sync.Mutex          // protects handlers and handlersOnce
 	handlers          map[handlerName]any
 	handlersOnce      map[handlerName]any
-	anonChansMu       sync.Mutex
-	anonChans         map[string]*AnonymousChannel
 	dataMu            sync.Mutex
 	data              map[string]any
 	server            *Server // server associated with the Client
@@ -125,13 +124,9 @@ func (c *Client) Bind(conn Conn) {
 	// cancellation.
 	c.ctx, c.ctxCancel = context.WithCancelCause(context.Background())
 	c.ctx = context.WithValue(c.ctx, clientKey{}, c)
-	c.connReqMu.Unlock()
-
-	// Close all anonymous channels from the previous connection.
-	c.anonChansMu.Lock()
 	prevAnonChans := c.anonChans
 	c.anonChans = make(map[string]*AnonymousChannel)
-	c.anonChansMu.Unlock()
+	c.connReqMu.Unlock()
 	for _, ch := range prevAnonChans {
 		ch.closeWithCause(errRebound)
 	}
@@ -191,13 +186,11 @@ func (c *Client) close(
 		close(respCh)
 	}
 	clear(c.requestResponseCh)
+	anonChans := c.anonChans
+	c.anonChans = make(map[string]*AnonymousChannel)
 	c.connReqMu.Unlock()
 
 	// Close all anonymous channels (snapshot-clear-then-close to avoid deadlock).
-	c.anonChansMu.Lock()
-	anonChans := c.anonChans
-	c.anonChans = make(map[string]*AnonymousChannel)
-	c.anonChansMu.Unlock()
 	for _, ch := range anonChans {
 		ch.closeWithCause(fmt.Errorf("connection closed"))
 	}
@@ -569,9 +562,9 @@ func (c *Client) handleMessage(ctx context.Context, msg Message) error {
 	// Inbound anonymous channel abort: {h, x} (no RequestID needed)
 	if msg.AnonymousChannel != "" && msg.CancelReason != nil {
 		chanID := string(msg.AnonymousChannel)
-		c.anonChansMu.Lock()
+		c.connReqMu.Lock()
 		ch, ok := c.anonChans[chanID]
-		c.anonChansMu.Unlock()
+		c.connReqMu.Unlock()
 		if ok {
 			ch.closeWithCause(msg.parseCancelReason())
 		}
@@ -591,14 +584,12 @@ func (c *Client) handleMessage(ctx context.Context, msg Message) error {
 		if ok {
 			delete(c.requestResponseCh, *msg.RequestID)
 		}
+		anon := newAnonymousChannel(ctx, chanID, c)
+		c.anonChans[chanID] = anon
 		c.connReqMu.Unlock()
 		if respCh == nil {
 			return nil
 		}
-		anon := newAnonymousChannel(chanID, c)
-		c.anonChansMu.Lock()
-		c.anonChans[chanID] = anon
-		c.anonChansMu.Unlock()
 		respCh <- messageResponse{anon, nil}
 		close(respCh)
 		return nil
@@ -698,7 +689,7 @@ func (c *Client) handleRegularMessage(ctx context.Context, msg Message, eventNam
 	}
 	// For inbound requests, create a request-specific cancellable context and
 	// inject the anonymous channel factory.
-	var factoryChan *AnonymousChannel
+	var anonChan *AnonymousChannel
 	if msg.RequestID != nil {
 		handlerCtx, cancel = context.WithCancelCause(handlerCtx)
 		// Save the CancelCauseFunc for the request
@@ -709,10 +700,10 @@ func (c *Client) handleRegularMessage(ctx context.Context, msg Message, eventNam
 		// Inject anonymous channel factory so the handler can call Channel(ctx)
 		chanID := strconv.Itoa(*msg.RequestID)
 		factory := func() *AnonymousChannel {
-			if factoryChan == nil {
-				factoryChan = newAnonymousChannel(chanID, c)
+			if anonChan == nil {
+				anonChan = newAnonymousChannel(ctx, chanID, c)
 			}
-			return factoryChan
+			return anonChan
 		}
 		handlerCtx = context.WithValue(handlerCtx, anonChannelKey{}, factory)
 	}
@@ -730,8 +721,8 @@ func (c *Client) handleRegularMessage(ctx context.Context, msg Message, eventNam
 
 		if msg.RequestID == nil {
 			// Silently ignore the response if it's not a request
-			if factoryChan != nil {
-				factoryChan.ctxCancel(context.Canceled) // cleanup unused factory
+			if anonChan != nil {
+				anonChan.ctxCancel(context.Canceled) // cleanup unused factory
 			}
 			return
 		}
@@ -744,10 +735,10 @@ func (c *Client) handleRegularMessage(ctx context.Context, msg Message, eventNam
 		chanID := strconv.Itoa(*msg.RequestID)
 
 		// Check if handler returned the factory anonymous channel
-		if anon, ok := result.(*AnonymousChannel); ok && anon != nil && anon == factoryChan {
-			c.anonChansMu.Lock()
+		if anon, ok := result.(*AnonymousChannel); ok && anon != nil && anon == anonChan {
+			c.connReqMu.Lock()
 			c.anonChans[chanID] = anon
-			c.anonChansMu.Unlock()
+			c.connReqMu.Unlock()
 			sendErr := c.sendAnonCreation(ctx, msg.RequestID, chanID)
 			if sendErr != nil {
 				sendErr = fmt.Errorf("responding to request: %w", sendErr)
@@ -760,8 +751,8 @@ func (c *Client) handleRegularMessage(ctx context.Context, msg Message, eventNam
 			return
 		}
 		// Clean up unused factory channel if one was created
-		if factoryChan != nil {
-			factoryChan.ctxCancel(context.Canceled)
+		if anonChan != nil {
+			anonChan.ctxCancel(context.Canceled)
 		}
 
 		if err != nil {
@@ -791,9 +782,9 @@ func (c *Client) handleAnonChannelMessage(ctx context.Context, msg Message, even
 	chanID := string(msg.AnonymousChannel)
 
 	// Lookup the anonymous channel
-	c.anonChansMu.Lock()
+	c.connReqMu.Lock()
 	_, ok := c.anonChans[chanID]
-	c.anonChansMu.Unlock()
+	c.connReqMu.Unlock()
 	if !ok {
 		// Unknown anonymous channel: notify remote and reject any sub-request
 		defer close(msg.processed)
@@ -841,7 +832,7 @@ func (c *Client) handleAnonChannelMessage(ctx context.Context, msg Message, even
 	}
 	// For inbound sub-requests on anonymous channels, create a cancellable
 	// context and inject a nested anonymous channel factory.
-	var factoryChan *AnonymousChannel
+	var anonChan *AnonymousChannel
 	if msg.RequestID != nil {
 		handlerCtx, anonCancel = context.WithCancelCause(handlerCtx)
 		c.inboundCancelsMu.Lock()
@@ -850,10 +841,10 @@ func (c *Client) handleAnonChannelMessage(ctx context.Context, msg Message, even
 
 		subChanID := strconv.Itoa(*msg.RequestID)
 		factory := func() *AnonymousChannel {
-			if factoryChan == nil {
-				factoryChan = newAnonymousChannel(subChanID, c)
+			if anonChan == nil {
+				anonChan = newAnonymousChannel(ctx, subChanID, c)
 			}
-			return factoryChan
+			return anonChan
 		}
 		handlerCtx = context.WithValue(handlerCtx, anonChannelKey{}, factory)
 	}
@@ -865,8 +856,8 @@ func (c *Client) handleAnonChannelMessage(ctx context.Context, msg Message, even
 			anonCancel(context.Canceled)
 		}
 		if msg.RequestID == nil {
-			if factoryChan != nil {
-				factoryChan.ctxCancel(context.Canceled)
+			if anonChan != nil {
+				anonChan.ctxCancel(context.Canceled)
 			}
 			return
 		}
@@ -877,10 +868,10 @@ func (c *Client) handleAnonChannelMessage(ctx context.Context, msg Message, even
 		subChanID := strconv.Itoa(*msg.RequestID)
 
 		// Check if handler returned the factory anonymous channel
-		if anon, ok := result.(*AnonymousChannel); ok && anon != nil && anon == factoryChan {
-			c.anonChansMu.Lock()
+		if anon, ok := result.(*AnonymousChannel); ok && anon != nil && anon == anonChan {
+			c.connReqMu.Lock()
 			c.anonChans[subChanID] = anon
-			c.anonChansMu.Unlock()
+			c.connReqMu.Unlock()
 			sendErr := c.sendAnonCreation(ctx, msg.RequestID, subChanID)
 			if sendErr != nil {
 				sendErr = fmt.Errorf("responding to request: %w", sendErr)
@@ -892,8 +883,8 @@ func (c *Client) handleAnonChannelMessage(ctx context.Context, msg Message, even
 			}
 			return
 		}
-		if factoryChan != nil {
-			factoryChan.ctxCancel(context.Canceled)
+		if anonChan != nil {
+			anonChan.ctxCancel(context.Canceled)
 		}
 
 		if err != nil {
