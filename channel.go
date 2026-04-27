@@ -131,7 +131,7 @@ func (c *ClientChannel) Close() error {
 	}
 	c.client = nil
 	cl.handlersMu.Lock()
-	closeHandlersForChannel(c.name, cl.handlers, cl.handlersOnce)
+	closeHandlersForChannel(c.name, false, cl.handlers, cl.handlersOnce)
 	cl.handlersMu.Unlock()
 	return nil
 }
@@ -166,7 +166,7 @@ func (c ClientChannel) Emit(ctx context.Context, arguments ...any) error {
 			"cannot emit reserved event '%s' on main channel", eventName,
 		)
 	}
-	return c.client.sendEvent(ctx, c.name, arguments...)
+	return c.client.sendEvent(ctx, c.name, false, arguments...)
 }
 
 // Request sends a request to the client and returns the response. The passed
@@ -187,7 +187,7 @@ func (c ClientChannel) Request(
 			"cannot emit reserved event '%s' on main channel", eventName,
 		)
 	}
-	return c.client.sendRequest(ctx, c.name, arguments...)
+	return c.client.sendRequest(ctx, c.name, false, arguments...)
 }
 
 // Name returns the name of the channel
@@ -255,7 +255,7 @@ func (c *ServerChannel) Close() error {
 	}
 	c.server = nil
 	s.handlersMu.Lock()
-	closeHandlersForChannel(c.name, s.handlers, s.handlersOnce)
+	closeHandlersForChannel(c.name, false, s.handlers, s.handlersOnce)
 	s.handlersMu.Unlock()
 	return nil
 }
@@ -290,7 +290,7 @@ func (c ServerChannel) Emit(
 	defer c.server.clientsMu.Unlock()
 
 	for client := range c.server.clients {
-		err := client.sendEvent(ctx, c.name, arguments...)
+		err := client.sendEvent(ctx, c.name, false, arguments...)
 		if err != nil {
 			errs = append(errs, ClientError{
 				Client: client,

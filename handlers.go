@@ -43,8 +43,9 @@ func IsReservedEvent(eventName string) bool {
 // handlerName is a unique name for a handler function having the specified
 // channel and event name.
 type handlerName struct {
-	Channel string
-	Event   string
+	Channel   string
+	Anonymous bool   // true for anonymous (request-scoped) channel handlers
+	Event     string
 }
 
 var errorType = reflect.TypeFor[error]()
@@ -177,18 +178,35 @@ func emitReserved(
 // channel from both persistent and one-time handler maps.
 func closeHandlersForChannel(
 	channel string,
+	anonymous bool,
 	handlers map[handlerName]any,
 	handlersOnce map[handlerName]any,
 ) {
 	for key := range handlers {
-		if key.Channel == channel {
+		if key.Channel == channel && key.Anonymous == anonymous {
 			delete(handlers, key)
 		}
 	}
 	for key := range handlersOnce {
-		if key.Channel == channel {
+		if key.Channel == channel && key.Anonymous == anonymous {
 			delete(handlersOnce, key)
 		}
+	}
+}
+
+// registerHandler adds a handler for the given channel, event, and anonymous
+// flag to the appropriate handler map. It acquires the client's handlersMu.
+func registerHandler(cl *Client, channel, event string, anonymous bool, handler any, once bool) {
+	cl.handlersMu.Lock()
+	defer cl.handlersMu.Unlock()
+	name := handlerName{Channel: channel, Anonymous: anonymous, Event: event}
+	if handler == nil {
+		delete(cl.handlers, name)
+		delete(cl.handlersOnce, name)
+	} else if once {
+		cl.handlersOnce[name] = handler
+	} else {
+		cl.handlers[name] = handler
 	}
 }
 

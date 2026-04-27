@@ -25,18 +25,43 @@ func (bit *weakBool) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// anonChannelH represents the "h" field in an anonymous channel message.
+// The JS library sends a bare number (e.g. 1) as the creation sentinel; Go
+// sends a string channel ID. Custom unmarshalling maps any truthy number to
+// the string "1" so that downstream code only needs to check for "".
+type anonChannelH string
+
+func (h *anonChannelH) UnmarshalJSON(data []byte) error {
+	// Try string first (Go → JS messages use a string channel ID)
+	var s string
+	if json.Unmarshal(data, &s) == nil {
+		*h = anonChannelH(s)
+		return nil
+	}
+	// Fall back to number (JS sends h:1 as creation sentinel)
+	var n float64
+	if json.Unmarshal(data, &n) == nil {
+		if n != 0 {
+			*h = "1"
+		}
+		return nil
+	}
+	return nil
+}
+
 // Message is a ws-wrapper JSON-encoded message.
 // See https://github.com/bminer/ws-wrapper/blob/master/README.md#protocol
 type Message struct {
-	Channel         string            `json:"c,omitempty"`
-	Arguments       []json.RawMessage `json:"a,omitempty"` // Arguments[0] is the event name
-	RequestID       *int              `json:"i,omitempty"`
-	ResponseData    any               `json:"d,omitempty"`
-	ResponseError   any               `json:"e,omitempty"`
-	ResponseJSError weakBool          `json:"_,omitempty"`
-	CancelReason    any               `json:"x,omitempty"` // Request cancellation signal
-	IgnoreIfFalse   *weakBool         `json:"ws-wrapper,omitempty"`
-	processed       chan struct{}
+	Channel          string            `json:"c,omitempty"`
+	AnonymousChannel anonChannelH      `json:"h,omitempty"`
+	Arguments        []json.RawMessage `json:"a,omitempty"` // Arguments[0] is the event name
+	RequestID        *int              `json:"i,omitempty"`
+	ResponseData     any               `json:"d,omitempty"`
+	ResponseError    any               `json:"e,omitempty"`
+	ResponseJSError  weakBool          `json:"_,omitempty"`
+	CancelReason     any               `json:"x,omitempty"` // Request cancellation signal
+	IgnoreIfFalse    *weakBool         `json:"ws-wrapper,omitempty"`
+	processed        chan struct{}
 }
 
 // EventName returns the name of the event or empty string if the message is
@@ -96,11 +121,11 @@ func (m Message) Response() (any, error) {
 	return nil, errors.New(errMsg)
 }
 
-// CancelCause returns the reason for this cancellation message as an error.
-// Returns context.Canceled if no reason is provided.
-func (m Message) CancelCause() error {
-	if m.RequestID == nil || m.CancelReason == nil {
-		return errors.New("message is not a cancellation")
+// parseCancelReason extracts a cancel/abort reason from the message's
+// CancelReason and ResponseJSError fields.
+func (m Message) parseCancelReason() error {
+	if m.CancelReason == nil {
+		return context.Canceled
 	}
 	// Handle JavaScript error
 	if m.ResponseJSError {
@@ -127,6 +152,15 @@ func (m Message) CancelCause() error {
 	return errors.New(errMsg)
 }
 
+// CancelCause returns the reason for this cancellation message as an error.
+// Returns context.Canceled if no reason is provided.
+func (m Message) CancelCause() error {
+	if m.RequestID == nil || m.CancelReason == nil {
+		return errors.New("message is not a cancellation")
+	}
+	return m.parseCancelReason()
+}
+
 func (m Message) LogValue() slog.Value {
 	if m.IgnoreIfFalse != nil && !*m.IgnoreIfFalse {
 		return slog.GroupValue(slog.Bool("ignored", true))
@@ -136,8 +170,12 @@ func (m Message) LogValue() slog.Value {
 	eventName := m.EventName()
 	const MaxArgLength = 1024
 	if eventName != "" {
+		ch := m.Channel
+		if m.AnonymousChannel != "" {
+			ch = "~" + string(m.AnonymousChannel) // prefix to distinguish anon channels
+		}
 		attrs = []slog.Attr{
-			slog.String("ch", m.Channel),
+			slog.String("ch", ch),
 			slog.String("event", eventName),
 		}
 		for i, arg := range m.HandlerArguments() {
