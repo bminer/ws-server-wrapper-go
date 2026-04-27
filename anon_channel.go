@@ -15,7 +15,7 @@ type AnonymousChannel struct {
 }
 
 // newAnonymousChannel creates an AnonymousChannel with the given ID and client.
-// The channel's context is derived from the client connection context so it is
+// The channel's context is derived from the client connection context, so it is
 // automatically cancelled when the connection closes.
 func newAnonymousChannel(
 	ctx context.Context,
@@ -102,20 +102,27 @@ func (ch *AnonymousChannel) closeWithCause(cause error) error {
 		return nil // already closed
 	}
 	ch.client = nil
-
-	ch.ctxCancel(cause)
-
 	c.handlersMu.Lock()
 	closeHandlersForChannel(ch.name, true, c.handlers, c.handlersOnce)
 	c.handlersMu.Unlock()
 
+	ch.ctxCancel(cause)
 	c.connReqMu.Lock()
 	delete(c.anonChans, ch.name)
 	c.connReqMu.Unlock()
 	return nil
 }
 
-// Abort sends an abort message to the remote end and then closes the channel.
+// closeDetached closes the channel without acquiring any client locks. It is
+// intended for bulk-close paths (Bind, close) where the caller has already
+// removed all channels from anonChans and will remove their handlers under a
+// single handlersMu lock.
+func (ch *AnonymousChannel) closeDetached(cause error) {
+	ch.client = nil
+	ch.ctxCancel(cause)
+}
+
+
 // The provided error is sent as the abort reason. If err is nil, it defaults
 // to context.Canceled.
 func (ch *AnonymousChannel) Abort(err error) error {

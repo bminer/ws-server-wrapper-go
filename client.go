@@ -130,13 +130,17 @@ func (c *Client) Bind(conn Conn) {
 	prevAnonChans := c.anonChans
 	c.anonChans = make(map[string]*AnonymousChannel)
 	c.connReqMu.Unlock()
-	for _, ch := range prevAnonChans {
-		ch.closeWithCause(errRebound)
-	}
 
+	// Close previous connection / anonymous channels
 	if oldConn != nil {
 		_ = oldConn.Close(StatusGoingAway, errRebound.Error())
 	}
+	c.handlersMu.Lock()
+	for _, ch := range prevAnonChans {
+		closeHandlersForChannel(ch.name, true, c.handlers, c.handlersOnce)
+		ch.closeDetached(errRebound)
+	}
+	c.handlersMu.Unlock()
 
 	// Fire "open" handlers synchronously before launching readMessages so that
 	// any handlers registered inside the "open" callback are in place before
@@ -194,9 +198,12 @@ func (c *Client) close(
 	c.connReqMu.Unlock()
 
 	// Close all anonymous channels (snapshot-clear-then-close to avoid deadlock).
+	c.handlersMu.Lock()
 	for _, ch := range anonChans {
-		ch.closeWithCause(errClosed)
+		closeHandlersForChannel(ch.name, true, c.handlers, c.handlersOnce)
+		ch.closeDetached(errClosed)
 	}
+	c.handlersMu.Unlock()
 
 	// Emit "close" events and close the connection
 	c.emitClose(status, reason, userClosed)
