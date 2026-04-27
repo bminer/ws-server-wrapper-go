@@ -14,6 +14,9 @@ import (
 // the context cancellation as a real connection error.
 var errRebound = errors.New("client bound to new connection")
 
+// errClosed is returned when an operation is attempted on a closed connection.
+var errClosed = errors.New("connection closed")
+
 // Client represents a WebSocket client
 type Client struct {
 	ClientChannel                     // the "main" client channel with no name
@@ -58,10 +61,10 @@ func NewClient(conn Conn) *Client {
 		// ClientChannel is set below
 		// ctx, ctxCancel, and conn are assigned in Bind method
 		requestResponseCh: make(map[int]chan messageResponse),
+		anonChans:         make(map[string]*AnonymousChannel),
 		inboundCancels:    make(map[int]func(error)),
 		handlers:          make(map[handlerName]any),
 		handlersOnce:      make(map[handlerName]any),
-		anonChans:         make(map[string]*AnonymousChannel),
 		data:              make(map[string]any),
 		// server is set only by Server.Accept
 	}
@@ -182,7 +185,7 @@ func (c *Client) close(
 	c.conn = nil
 	// Abort all pending outbound requests for this client.
 	for _, respCh := range c.requestResponseCh {
-		respCh <- messageResponse{nil, fmt.Errorf("connection closed")}
+		respCh <- messageResponse{nil, errClosed}
 		close(respCh)
 	}
 	clear(c.requestResponseCh)
@@ -192,7 +195,7 @@ func (c *Client) close(
 
 	// Close all anonymous channels (snapshot-clear-then-close to avoid deadlock).
 	for _, ch := range anonChans {
-		ch.closeWithCause(fmt.Errorf("connection closed"))
+		ch.closeWithCause(errClosed)
 	}
 
 	// Emit "close" events and close the connection
@@ -302,7 +305,7 @@ func (c *Client) sendEvent(ctx context.Context, channel string, anonymous bool, 
 	conn := c.conn
 	c.connReqMu.Unlock()
 	if conn == nil {
-		return fmt.Errorf("connection is closed")
+		return errClosed
 	}
 	// Encode arguments as JSON
 	jsonArgs := make([]json.RawMessage, len(arguments))
@@ -332,7 +335,7 @@ func (c *Client) sendRequest(
 	ctxClient := c.ctx
 	if conn == nil {
 		c.connReqMu.Unlock()
-		return nil, fmt.Errorf("connection is closed")
+		return nil, errClosed
 	}
 	// Create channel for message response
 	respCh := make(chan messageResponse, 1)
@@ -398,7 +401,7 @@ func (c *Client) sendAnonCancel(ctx context.Context, chanID string, reason error
 	conn := c.conn
 	c.connReqMu.Unlock()
 	if conn == nil {
-		return nil
+		return errClosed
 	}
 	return conn.WriteMessage(ctx, &Message{
 		AnonymousChannel: anonChannelH(chanID),
