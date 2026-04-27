@@ -82,58 +82,25 @@ type ClientChannel struct {
 //
 // If On is called multiple times for the same event name, the last handler
 // will be used. If handler is nil, the event handler is removed.
-func (c ClientChannel) On(eventName string, handler any) ClientChannel {
-	if c.client == nil {
-		return c // channel closed; do nothing
+func (ch ClientChannel) On(eventName string, handler any) ClientChannel {
+	c := ch.client
+	if c != nil {
+		key := handlerName{Channel: ch.name, Event: eventName}
+		registerClientHandler(c, key, handler, false)
 	}
-	if err := checkHandler(c.name, eventName, handler); err != nil {
-		panic(err)
-	}
-	key := handlerName{Channel: c.name, Event: eventName}
-	c.client.handlersMu.Lock()
-	if handler == nil {
-		delete(c.client.handlers, key)
-	} else {
-		c.client.handlers[key] = handler
-	}
-	c.client.handlersMu.Unlock()
-	return c
+	return ch
 }
 
 // Once adds a one-time event handler for the specified event to the channel.
 // See ClientChannel.On for more information about how event handlers are
 // called.
-func (c ClientChannel) Once(eventName string, handler any) ClientChannel {
-	if c.client == nil {
-		return c // channel closed; do nothing
+func (ch ClientChannel) Once(eventName string, handler any) ClientChannel {
+	c := ch.client
+	if c != nil {
+		key := handlerName{Channel: ch.name, Event: eventName}
+		registerClientHandler(c, key, handler, true)
 	}
-	if err := checkHandler(c.name, eventName, handler); err != nil {
-		panic(err)
-	}
-	key := handlerName{Channel: c.name, Event: eventName}
-	c.client.handlersMu.Lock()
-	if handler == nil {
-		delete(c.client.handlersOnce, key)
-	} else {
-		c.client.handlersOnce[key] = handler
-	}
-	c.client.handlersMu.Unlock()
-	return c
-}
-
-// Close removes all event handlers for this channel.
-//
-// Close returns nil.
-func (c *ClientChannel) Close() error {
-	cl := c.client
-	if cl == nil {
-		return nil // channel closed already
-	}
-	c.client = nil
-	cl.handlersMu.Lock()
-	closeHandlersForChannel(c.name, false, cl.handlers, cl.handlersOnce)
-	cl.handlersMu.Unlock()
-	return nil
+	return ch
 }
 
 // checkEventName ensures the event name is valid and returns it as a string.
@@ -149,50 +116,67 @@ func checkEventName(arguments []any) (string, error) {
 }
 
 // Emit sends an event to the client on the specified channel. The passed
-// context can be used to cancel writing the message to the client. The second
-// argument is the event name that tells the remote end which event handler to
-// call. Returns an error if there was an error sending the message to the
+// context can be used to cancel writing the message to the client. The first
+// argument must be the event name that tells the remote end which event handler
+// to call. Returns an error if there was an error sending the message to the
 // client.
-func (c ClientChannel) Emit(ctx context.Context, arguments ...any) error {
-	if c.client == nil {
-		return ChannelClosedError{Channel: c.name}
+func (ch ClientChannel) Emit(ctx context.Context, arguments ...any) error {
+	c := ch.client
+	if c == nil {
+		return ChannelClosedError{Channel: ch.name}
 	}
 	eventName, err := checkEventName(arguments)
 	if err != nil {
 		return err
 	}
-	if c.name == "" && IsReservedEvent(eventName) {
+	if ch.name == "" && IsReservedEvent(eventName) {
 		return fmt.Errorf(
 			"cannot emit reserved event '%s' on main channel", eventName,
 		)
 	}
-	return c.client.sendEvent(ctx, c.name, false, arguments...)
+	return c.sendEvent(ctx, ch.name, false, arguments...)
 }
 
 // Request sends a request to the client and returns the response. The passed
-// context can be used to cancel the request. The second argument is the event
+// context can be used to cancel the request. The first argument is the event
 // name that tells the remote end which request handler to call.
-func (c ClientChannel) Request(
+func (ch ClientChannel) Request(
 	ctx context.Context, arguments ...any,
 ) (response any, err error) {
-	if c.client == nil {
-		return nil, ChannelClosedError{Channel: c.name}
+	c := ch.client
+	if c == nil {
+		return nil, ChannelClosedError{Channel: ch.name}
 	}
 	eventName, err := checkEventName(arguments)
 	if err != nil {
 		return nil, err
 	}
-	if c.name == "" && IsReservedEvent(eventName) {
+	if ch.name == "" && IsReservedEvent(eventName) {
 		return nil, fmt.Errorf(
 			"cannot emit reserved event '%s' on main channel", eventName,
 		)
 	}
-	return c.client.sendRequest(ctx, c.name, false, arguments...)
+	return c.sendRequest(ctx, ch.name, false, arguments...)
 }
 
 // Name returns the name of the channel
-func (c ClientChannel) Name() string {
-	return c.name
+func (ch ClientChannel) Name() string {
+	return ch.name
+}
+
+// Close removes all event handlers for this channel.
+//
+// Close returns nil.
+func (ch *ClientChannel) Close() error {
+	c := ch.client
+	if c == nil {
+		return nil // already closed
+	}
+	ch.client = nil
+	c.handlersMu.Lock()
+	closeHandlersForChannel(ch.name, false, c.handlers, c.handlersOnce)
+	c.handlersMu.Unlock()
+	return nil
 }
 
 // ServerChannel is a channel on which events can be sent and received. Events

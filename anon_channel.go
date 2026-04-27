@@ -17,8 +17,12 @@ type AnonymousChannel struct {
 // newAnonymousChannel creates an AnonymousChannel with the given ID and client.
 // The channel's context is derived from the client connection context so it is
 // automatically cancelled when the connection closes.
-func newAnonymousChannel(connCtx context.Context, id string, c *Client) *AnonymousChannel {
-	ctx, ctxCancel := context.WithCancelCause(connCtx)
+func newAnonymousChannel(
+	ctx context.Context,
+	id string,
+	c *Client,
+) *AnonymousChannel {
+	ctx, ctxCancel := context.WithCancelCause(ctx)
 	return &AnonymousChannel{
 		ClientChannel: ClientChannel{name: id, client: c},
 		ctx:           ctx,
@@ -30,10 +34,10 @@ func newAnonymousChannel(connCtx context.Context, id string, c *Client) *Anonymo
 // See ClientChannel.On for handler signature details.
 func (ch *AnonymousChannel) On(eventName string, handler any) *AnonymousChannel {
 	c := ch.client
-	if c == nil {
-		return ch // channel closed; do nothing
+	if c != nil {
+		key := handlerName{Channel: ch.name, Anonymous: true, Event: eventName}
+		registerClientHandler(c, key, handler, false)
 	}
-	registerHandler(c, ch.name, eventName, true, handler, false)
 	return ch
 }
 
@@ -41,14 +45,15 @@ func (ch *AnonymousChannel) On(eventName string, handler any) *AnonymousChannel 
 // channel. See ClientChannel.On for handler signature details.
 func (ch *AnonymousChannel) Once(eventName string, handler any) *AnonymousChannel {
 	c := ch.client
-	if c == nil {
-		return ch // channel closed; do nothing
+	if c != nil {
+		key := handlerName{Channel: ch.name, Anonymous: true, Event: eventName}
+		registerClientHandler(c, key, handler, true)
 	}
-	registerHandler(c, ch.name, eventName, true, handler, true)
 	return ch
 }
 
-// Emit sends an event on this anonymous channel. The first argument must be
+// Emit sends an event on this anonymous channel. The passed context can be used
+// to cancel writing the message to the client. The first argument must be
 // the event name string. Returns an error if the channel is closed or if the
 // message could not be sent.
 func (ch *AnonymousChannel) Emit(ctx context.Context, arguments ...any) error {
@@ -56,16 +61,16 @@ func (ch *AnonymousChannel) Emit(ctx context.Context, arguments ...any) error {
 	if c == nil {
 		return ChannelClosedError{Channel: ch.name}
 	}
-	eventName, err := checkEventName(arguments)
+	_, err := checkEventName(arguments)
 	if err != nil {
 		return err
 	}
-	_ = eventName
 	return c.sendEvent(ctx, ch.name, true, arguments...)
 }
 
 // Request sends a request on this anonymous channel and returns the response.
-// The first argument must be the event name string.
+// The passed context can be used to cancel the request. The first argument must
+// be the event name string.
 func (ch *AnonymousChannel) Request(
 	ctx context.Context, arguments ...any,
 ) (any, error) {
@@ -85,32 +90,16 @@ func (ch *AnonymousChannel) Request(
 // context. It does NOT send an abort message to the remote end; use Abort for
 // that. Close is idempotent and safe to call multiple times.
 func (ch *AnonymousChannel) Close() error {
-	c := ch.client
-	if c == nil {
-		return nil // already closed
-	}
-	ch.client = nil
-
-	ch.ctxCancel(context.Canceled)
-
-	c.handlersMu.Lock()
-	closeHandlersForChannel(ch.name, true, c.handlers, c.handlersOnce)
-	c.handlersMu.Unlock()
-
-	c.connReqMu.Lock()
-	delete(c.anonChans, ch.name)
-	c.connReqMu.Unlock()
-
-	return nil
+	return ch.closeWithCause(context.Canceled)
 }
 
 // closeWithCause closes the anonymous channel with a specific cause. This is
 // used internally when the connection closes or when an abort is received from
 // the remote end; it does not send an abort message.
-func (ch *AnonymousChannel) closeWithCause(cause error) {
+func (ch *AnonymousChannel) closeWithCause(cause error) error {
 	c := ch.client
 	if c == nil {
-		return // already closed
+		return nil // already closed
 	}
 	ch.client = nil
 
@@ -123,6 +112,7 @@ func (ch *AnonymousChannel) closeWithCause(cause error) {
 	c.connReqMu.Lock()
 	delete(c.anonChans, ch.name)
 	c.connReqMu.Unlock()
+	return nil
 }
 
 // Abort sends an abort message to the remote end and then closes the channel.
@@ -131,17 +121,17 @@ func (ch *AnonymousChannel) closeWithCause(cause error) {
 func (ch *AnonymousChannel) Abort(err error) error {
 	c := ch.client
 	if c == nil {
-		return nil // already closed; nothing to abort
+		return nil // already closed
 	}
 	if err == nil {
 		err = context.Canceled
 	}
-	sendErr := c.sendAnonCancel(context.Background(), ch.name, err)
-	ch.closeWithCause(err)
+	sendErr := c.sendAnonCancel(ch.ctx, ch.name, err)
+	closeErr := ch.closeWithCause(err)
 	if sendErr != nil {
-		return fmt.Errorf("sending abort: %w", sendErr)
+		return fmt.Errorf("sending cancellation: %w", sendErr)
 	}
-	return nil
+	return closeErr
 }
 
 // Context returns a context that is cancelled when this anonymous channel is

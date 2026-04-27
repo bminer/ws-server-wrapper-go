@@ -44,7 +44,7 @@ func IsReservedEvent(eventName string) bool {
 // channel and event name.
 type handlerName struct {
 	Channel   string
-	Anonymous bool   // true for anonymous (request-scoped) channel handlers
+	Anonymous bool // true for anonymous (request-scoped) channel handlers
 	Event     string
 }
 
@@ -194,19 +194,33 @@ func closeHandlersForChannel(
 	}
 }
 
-// registerHandler adds a handler for the given channel, event, and anonymous
-// flag to the appropriate handler map. It acquires the client's handlersMu.
-func registerHandler(cl *Client, channel, event string, anonymous bool, handler any, once bool) {
-	cl.handlersMu.Lock()
-	defer cl.handlersMu.Unlock()
-	name := handlerName{Channel: channel, Anonymous: anonymous, Event: event}
+// registerClientHandler adds a handler for the given channel and event to the
+// appropriate handler map. It acquires the client's handlersMu.
+func registerClientHandler(
+	c *Client,
+	key handlerName,
+	handler any,
+	once bool,
+) {
 	if handler == nil {
-		delete(cl.handlers, name)
-		delete(cl.handlersOnce, name)
-	} else if once {
-		cl.handlersOnce[name] = handler
+		c.handlersMu.Lock()
+		defer c.handlersMu.Unlock()
+		if once {
+			delete(c.handlersOnce, key)
+		} else {
+			delete(c.handlers, key)
+		}
 	} else {
-		cl.handlers[name] = handler
+		if err := checkHandler(key.Channel, key.Event, handler); err != nil {
+			panic(err)
+		}
+		c.handlersMu.Lock()
+		defer c.handlersMu.Unlock()
+		if once {
+			c.handlersOnce[key] = handler
+		} else {
+			c.handlers[key] = handler
+		}
 	}
 }
 
