@@ -260,13 +260,13 @@ func TestClientChannelCloseRemovesChannelHandlers(t *testing.T) {
 		t.Fatalf("unexpected close error: %v", err)
 	}
 
-	if _, ok := client.handlers[handlerName{Channel: "room", Anonymous: false, Event: "a"}]; ok {
+	if _, ok := client.handlers[handlerName{Channel: "room", Event: "a"}]; ok {
 		t.Fatal("expected persistent room handler to be removed")
 	}
-	if _, ok := client.handlersOnce[handlerName{Channel: "room", Anonymous: false, Event: "b"}]; ok {
+	if _, ok := client.handlersOnce[handlerName{Channel: "room", Event: "b"}]; ok {
 		t.Fatal("expected once room handler to be removed")
 	}
-	if _, ok := client.handlers[handlerName{Channel: "other", Anonymous: false, Event: "a"}]; !ok {
+	if _, ok := client.handlers[handlerName{Channel: "other", Event: "a"}]; !ok {
 		t.Fatal("expected handlers for other channels to be preserved")
 	}
 }
@@ -283,13 +283,13 @@ func TestServerChannelCloseRemovesChannelHandlers(t *testing.T) {
 		t.Fatalf("unexpected close error: %v", err)
 	}
 
-	if _, ok := server.handlers[handlerName{Channel: "room", Anonymous: false, Event: "a"}]; ok {
+	if _, ok := server.handlers[handlerName{Channel: "room", Event: "a"}]; ok {
 		t.Fatal("expected persistent room handler to be removed")
 	}
-	if _, ok := server.handlersOnce[handlerName{Channel: "room", Anonymous: false, Event: "b"}]; ok {
+	if _, ok := server.handlersOnce[handlerName{Channel: "room", Event: "b"}]; ok {
 		t.Fatal("expected once room handler to be removed")
 	}
-	if _, ok := server.handlers[handlerName{Channel: "other", Anonymous: false, Event: "a"}]; !ok {
+	if _, ok := server.handlers[handlerName{Channel: "other", Event: "a"}]; !ok {
 		t.Fatal("expected handlers for other channels to be preserved")
 	}
 }

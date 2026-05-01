@@ -174,7 +174,7 @@ func (ch *ClientChannel) Close() error {
 	}
 	ch.client = nil
 	c.handlersMu.Lock()
-	closeHandlersForChannel(ch.name, false, c.handlers, c.handlersOnce)
+	closeHandlersForChannel(ch.name, 0, c.handlers, c.handlersOnce)
 	c.handlersMu.Unlock()
 	return nil
 }
@@ -239,7 +239,7 @@ func (c *ServerChannel) Close() error {
 	}
 	c.server = nil
 	s.handlersMu.Lock()
-	closeHandlersForChannel(c.name, false, s.handlers, s.handlersOnce)
+	closeHandlersForChannel(c.name, 0, s.handlers, s.handlersOnce)
 	s.handlersMu.Unlock()
 	return nil
 }

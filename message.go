@@ -146,13 +146,16 @@ func (m Message) LogValue() slog.Value {
 	eventName := m.EventName()
 	const MaxArgLength = 1024
 	if eventName != "" {
-		ch := m.Channel
 		if m.AnonymousChannel != 0 {
-			ch = "~" + strconv.Itoa(m.AnonymousChannel) // prefix to distinguish anon channels
-		}
-		attrs = []slog.Attr{
-			slog.String("ch", ch),
-			slog.String("event", eventName),
+			attrs = []slog.Attr{
+				slog.Int("anonCh", m.AnonymousChannel),
+				slog.String("event", eventName),
+			}
+		} else {
+			attrs = []slog.Attr{
+				slog.String("ch", m.Channel),
+				slog.String("event", eventName),
+			}
 		}
 		for i, arg := range m.HandlerArguments() {
 			if len(arg) > MaxArgLength {

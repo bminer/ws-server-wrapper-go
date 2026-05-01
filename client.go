@@ -137,7 +137,7 @@ func (c *Client) Bind(conn Conn) {
 	}
 	c.handlersMu.Lock()
 	for _, ch := range prevAnonChans {
-		closeHandlersForChannel(ch.name, true, c.handlers, c.handlersOnce)
+		closeHandlersForChannel("", ch.id, c.handlers, c.handlersOnce)
 		ch.closeDetached(errRebound)
 	}
 	c.handlersMu.Unlock()
@@ -200,7 +200,7 @@ func (c *Client) close(
 	// Close all anonymous channels (snapshot-clear-then-close to avoid deadlock).
 	c.handlersMu.Lock()
 	for _, ch := range anonChans {
-		closeHandlersForChannel(ch.name, true, c.handlers, c.handlersOnce)
+		closeHandlersForChannel("", ch.id, c.handlers, c.handlersOnce)
 		ch.closeDetached(errClosed)
 	}
 	c.handlersMu.Unlock()
@@ -664,7 +664,12 @@ func (c *Client) handleInboundMessage(
 	}
 
 	// Look up handler (client-specific first)
-	handlerID := handlerName{Channel: chanID, Anonymous: anonID != 0, Event: eventName}
+	var handlerID handlerName
+	if anonID != 0 {
+		handlerID = handlerName{AnonymousChannel: anonID, Event: eventName}
+	} else {
+		handlerID = handlerName{Channel: chanID, Event: eventName}
+	}
 	c.handlersMu.Lock()
 	handler, ok := c.handlersOnce[handlerID]
 	if ok {

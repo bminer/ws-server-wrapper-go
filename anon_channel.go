@@ -38,7 +38,7 @@ func newAnonymousChannel(
 func (ch *AnonymousChannel) On(eventName string, handler any) *AnonymousChannel {
 	c := ch.client
 	if c != nil {
-		key := handlerName{Channel: ch.name, Anonymous: true, Event: eventName}
+		key := handlerName{AnonymousChannel: ch.id, Event: eventName}
 		registerClientHandler(c, key, handler, false)
 	}
 	return ch
@@ -49,7 +49,7 @@ func (ch *AnonymousChannel) On(eventName string, handler any) *AnonymousChannel 
 func (ch *AnonymousChannel) Once(eventName string, handler any) *AnonymousChannel {
 	c := ch.client
 	if c != nil {
-		key := handlerName{Channel: ch.name, Anonymous: true, Event: eventName}
+		key := handlerName{AnonymousChannel: ch.id, Event: eventName}
 		registerClientHandler(c, key, handler, true)
 	}
 	return ch
@@ -106,7 +106,7 @@ func (ch *AnonymousChannel) closeWithCause(cause error) error {
 	}
 	ch.client = nil
 	c.handlersMu.Lock()
-	closeHandlersForChannel(ch.name, true, c.handlers, c.handlersOnce)
+	closeHandlersForChannel("", ch.id, c.handlers, c.handlersOnce)
 	c.handlersMu.Unlock()
 
 	ch.ctxCancel(cause)
