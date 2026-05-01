@@ -26,7 +26,7 @@ type Client struct {
 	conn              Conn            // WebSocket connection; set `nil` on close
 	requestID         int             // auto-incrementing request ID
 	requestResponseCh map[int]chan messageResponse
-	anonChans         map[string]*AnonymousChannel
+	anonChans         map[int]*AnonymousChannel
 	inboundCancelsMu  sync.Mutex
 	inboundCancels    map[int]func(error) // cancel funcs for inbound requests
 	handlersMu        sync.Mutex          // protects handlers and handlersOnce
@@ -61,7 +61,7 @@ func NewClient(conn Conn) *Client {
 		// ClientChannel is set below
 		// ctx, ctxCancel, and conn are assigned in Bind method
 		requestResponseCh: make(map[int]chan messageResponse),
-		anonChans:         make(map[string]*AnonymousChannel),
+		anonChans:         make(map[int]*AnonymousChannel),
 		inboundCancels:    make(map[int]func(error)),
 		handlers:          make(map[handlerName]any),
 		handlersOnce:      make(map[handlerName]any),
@@ -128,7 +128,7 @@ func (c *Client) Bind(conn Conn) {
 	c.ctx, c.ctxCancel = context.WithCancelCause(context.Background())
 	c.ctx = context.WithValue(c.ctx, clientKey{}, c)
 	prevAnonChans := c.anonChans
-	c.anonChans = make(map[string]*AnonymousChannel)
+	c.anonChans = make(map[int]*AnonymousChannel)
 	c.connReqMu.Unlock()
 
 	// Close previous connection / anonymous channels
@@ -194,7 +194,7 @@ func (c *Client) close(
 	}
 	clear(c.requestResponseCh)
 	anonChans := c.anonChans
-	c.anonChans = make(map[string]*AnonymousChannel)
+	c.anonChans = make(map[int]*AnonymousChannel)
 	c.connReqMu.Unlock()
 
 	// Close all anonymous channels (snapshot-clear-then-close to avoid deadlock).
@@ -288,7 +288,7 @@ func (c *Client) sendCancel(
 }
 
 // sendAnonCancel sends an anonymous channel abort message to the client.
-func (c *Client) sendAnonCancel(ctx context.Context, chanID string, reason error) error {
+func (c *Client) sendAnonCancel(ctx context.Context, chanID int, reason error) error {
 	if reason == nil {
 		reason = context.Canceled
 	}
@@ -299,7 +299,7 @@ func (c *Client) sendAnonCancel(ctx context.Context, chanID string, reason error
 		return errClosed
 	}
 	return conn.WriteMessage(ctx, &Message{
-		AnonymousChannel: anonChannelH(chanID),
+		AnonymousChannel: chanID,
 		ResponseJSError:  true,
 		CancelReason: map[string]any{
 			"message": reason.Error(),
@@ -324,8 +324,9 @@ func (c *Client) sendResolve(ctx context.Context, requestID *int, data any) erro
 	})
 }
 
-// sendResolveAnon sends an anonymous channel creation response to the client.
-func (c *Client) sendResolveAnon(ctx context.Context, requestID *int, chanID string) error {
+// sendResolveAnon sends an anonymous channel creation response {i, h:1} to
+// the client. The channel ID is inferred from i on the remote end.
+func (c *Client) sendResolveAnon(ctx context.Context, requestID *int) error {
 	c.connReqMu.Lock()
 	conn := c.conn
 	c.connReqMu.Unlock()
@@ -334,12 +335,12 @@ func (c *Client) sendResolveAnon(ctx context.Context, requestID *int, chanID str
 	}
 	return conn.WriteMessage(ctx, &Message{
 		RequestID:        requestID,
-		AnonymousChannel: anonChannelH(chanID),
+		AnonymousChannel: 1,
 	})
 }
 
 // sendEvent sends an event to the client
-func (c *Client) sendEvent(ctx context.Context, channel string, anonymous bool, arguments ...any) error {
+func (c *Client) sendEvent(ctx context.Context, channel string, anonID int, arguments ...any) error {
 	c.connReqMu.Lock()
 	conn := c.conn
 	c.connReqMu.Unlock()
@@ -357,8 +358,8 @@ func (c *Client) sendEvent(ctx context.Context, channel string, anonymous bool, 
 	}
 	// Send event to client
 	msg := &Message{Arguments: jsonArgs}
-	if anonymous {
-		msg.AnonymousChannel = anonChannelH(channel)
+	if anonID != 0 {
+		msg.AnonymousChannel = anonID
 	} else {
 		msg.Channel = channel
 	}
@@ -367,7 +368,7 @@ func (c *Client) sendEvent(ctx context.Context, channel string, anonymous bool, 
 
 // sendRequest sends a request to the client and returns the response
 func (c *Client) sendRequest(
-	ctx context.Context, channel string, anonymous bool, arguments ...any,
+	ctx context.Context, channel string, anonID int, arguments ...any,
 ) (any, error) {
 	c.connReqMu.Lock()
 	conn := c.conn
@@ -402,8 +403,8 @@ func (c *Client) sendRequest(
 
 	// Send request to client
 	msg := &Message{Arguments: jsonArgs, RequestID: &requestID}
-	if anonymous {
-		msg.AnonymousChannel = anonChannelH(channel)
+	if anonID != 0 {
+		msg.AnonymousChannel = anonID
 	} else {
 		msg.Channel = channel
 	}
@@ -560,20 +561,19 @@ func (c *Client) handleMessage(ctx context.Context, msg Message) error {
 	// Get message event name if any
 	eventName := msg.EventName()
 	if eventName != "" {
+		anonID := msg.AnonymousChannel
 		chanID := msg.Channel
-		anonymous := msg.AnonymousChannel != ""
-		if anonymous {
-			chanID = string(msg.AnonymousChannel)
+		if anonID != 0 {
+			chanID = strconv.Itoa(anonID)
 		}
-		return c.handleInboundMessage(ctx, msg, eventName, chanID, anonymous)
+		return c.handleInboundMessage(ctx, msg, eventName, chanID, anonID)
 	}
 	defer close(msg.processed)
 
 	// Inbound anonymous channel abort: {h, x} (no RequestID needed)
-	if msg.AnonymousChannel != "" && msg.CancelReason != nil {
-		chanID := string(msg.AnonymousChannel)
+	if msg.AnonymousChannel != 0 && msg.CancelReason != nil {
 		c.connReqMu.Lock()
-		ch, ok := c.anonChans[chanID]
+		ch, ok := c.anonChans[msg.AnonymousChannel]
 		c.connReqMu.Unlock()
 		if ok {
 			ch.closeWithCause(msg.parseCancelReason())
@@ -587,8 +587,8 @@ func (c *Client) handleMessage(ctx context.Context, msg Message) error {
 	}
 
 	// Anonymous channel creation response: {i, h} (no CancelReason, no Arguments)
-	if msg.AnonymousChannel != "" && msg.CancelReason == nil {
-		chanID := strconv.Itoa(*msg.RequestID)
+	if msg.AnonymousChannel != 0 && msg.CancelReason == nil {
+		chanID := *msg.RequestID
 		c.connReqMu.Lock()
 		respCh, ok := c.requestResponseCh[*msg.RequestID]
 		if ok {
@@ -639,23 +639,23 @@ func (c *Client) handleMessage(ctx context.Context, msg Message) error {
 }
 
 // handleInboundMessage handles an inbound event or request on any channel.
-// chanID is the channel name (msg.Channel for regular, string(msg.AnonymousChannel)
-// for anonymous). anonymous mirrors the handlerName.Anonymous flag.
+// chanID is the string channel name for handler routing; anonID is non-zero for
+// anonymous channels and is used for map lookups and abort messages.
 func (c *Client) handleInboundMessage(
 	ctx context.Context, msg Message, eventName string,
-	chanID string, anonymous bool,
+	chanID string, anonID int,
 ) error {
 	var cancel context.CancelCauseFunc
 
 	// For anonymous channels, verify the channel exists; send abort if not.
-	if anonymous {
+	if anonID != 0 {
 		c.connReqMu.Lock()
-		_, ok := c.anonChans[chanID]
+		_, ok := c.anonChans[anonID]
 		c.connReqMu.Unlock()
 		if !ok {
 			defer close(msg.processed)
 			err := fmt.Errorf("anonymous channel '%s' not found", chanID)
-			_ = c.sendAnonCancel(ctx, chanID, err)
+			_ = c.sendAnonCancel(ctx, anonID, err)
 			if msg.RequestID != nil {
 				return c.sendReject(ctx, msg.RequestID, err)
 			}
@@ -664,7 +664,7 @@ func (c *Client) handleInboundMessage(
 	}
 
 	// Look up handler (client-specific first)
-	handlerID := handlerName{Channel: chanID, Anonymous: anonymous, Event: eventName}
+	handlerID := handlerName{Channel: chanID, Anonymous: anonID != 0, Event: eventName}
 	c.handlersMu.Lock()
 	handler, ok := c.handlersOnce[handlerID]
 	if ok {
@@ -679,7 +679,7 @@ func (c *Client) handleInboundMessage(
 	if c.server != nil {
 		c.server.handlersMu.Lock()
 		handlerCtxFunc = c.server.handlerCtxFunc
-		if !anonymous && handler == nil {
+		if anonID == 0 && handler == nil {
 			handler, ok = c.server.handlersOnce[handlerID]
 			if ok {
 				delete(c.server.handlersOnce, handlerID)
@@ -711,14 +711,14 @@ func (c *Client) handleInboundMessage(
 	// For inbound requests, create a cancellable context and inject the
 	// anonymous channel factory so handlers can call Channel(ctx).
 	var anonChan *AnonymousChannel
-	var newChanID string
+	var newChanID int
 	if msg.RequestID != nil {
 		handlerCtx, cancel = context.WithCancelCause(handlerCtx)
 		c.inboundCancelsMu.Lock()
 		c.inboundCancels[*msg.RequestID] = cancel
 		c.inboundCancelsMu.Unlock()
 
-		newChanID = strconv.Itoa(*msg.RequestID)
+		newChanID = *msg.RequestID
 		factory := func() *AnonymousChannel {
 			if anonChan == nil {
 				anonChan = newAnonymousChannel(ctx, newChanID, c)
@@ -751,7 +751,7 @@ func (c *Client) handleInboundMessage(
 			c.connReqMu.Lock()
 			c.anonChans[newChanID] = anon
 			c.connReqMu.Unlock()
-			sendErr := c.sendResolveAnon(ctx, msg.RequestID, newChanID)
+			sendErr := c.sendResolveAnon(ctx, msg.RequestID)
 			if sendErr != nil {
 				sendErr = fmt.Errorf("responding to request: %w", sendErr)
 				c.emitError(sendErr)

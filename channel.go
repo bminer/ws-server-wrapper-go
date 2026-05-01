@@ -134,7 +134,7 @@ func (ch ClientChannel) Emit(ctx context.Context, arguments ...any) error {
 			"cannot emit reserved event '%s' on main channel", eventName,
 		)
 	}
-	return c.sendEvent(ctx, ch.name, false, arguments...)
+	return c.sendEvent(ctx, ch.name, 0, arguments...)
 }
 
 // Request sends a request to the client and returns the response. The passed
@@ -156,7 +156,7 @@ func (ch ClientChannel) Request(
 			"cannot emit reserved event '%s' on main channel", eventName,
 		)
 	}
-	return c.sendRequest(ctx, ch.name, false, arguments...)
+	return c.sendRequest(ctx, ch.name, 0, arguments...)
 }
 
 // Name returns the name of the channel
@@ -274,7 +274,7 @@ func (c ServerChannel) Emit(
 	defer c.server.clientsMu.Unlock()
 
 	for client := range c.server.clients {
-		err := client.sendEvent(ctx, c.name, false, arguments...)
+		err := client.sendEvent(ctx, c.name, 0, arguments...)
 		if err != nil {
 			errs = append(errs, ClientError{
 				Client: client,

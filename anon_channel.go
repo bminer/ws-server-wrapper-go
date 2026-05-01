@@ -3,13 +3,15 @@ package wrapper
 import (
 	"context"
 	"fmt"
+	"strconv"
 )
 
 // AnonymousChannel is a request-scoped channel created when a handler returns
 // *AnonymousChannel in response to a request. It allows streaming or
 // multi-message patterns over a single WebSocket connection.
 type AnonymousChannel struct {
-	ClientChannel // inherits name (channel ID string) and Name()
+	id            int
+	ClientChannel // inherits name (string form of id) and Name()
 	ctx           context.Context
 	ctxCancel     context.CancelCauseFunc
 }
@@ -19,12 +21,13 @@ type AnonymousChannel struct {
 // automatically cancelled when the connection closes.
 func newAnonymousChannel(
 	ctx context.Context,
-	id string,
+	id int,
 	c *Client,
 ) *AnonymousChannel {
 	ctx, ctxCancel := context.WithCancelCause(ctx)
 	return &AnonymousChannel{
-		ClientChannel: ClientChannel{name: id, client: c},
+		id:            id,
+		ClientChannel: ClientChannel{name: strconv.Itoa(id), client: c},
 		ctx:           ctx,
 		ctxCancel:     ctxCancel,
 	}
@@ -65,7 +68,7 @@ func (ch *AnonymousChannel) Emit(ctx context.Context, arguments ...any) error {
 	if err != nil {
 		return err
 	}
-	return c.sendEvent(ctx, ch.name, true, arguments...)
+	return c.sendEvent(ctx, "", ch.id, arguments...)
 }
 
 // Request sends a request on this anonymous channel and returns the response.
@@ -83,7 +86,7 @@ func (ch *AnonymousChannel) Request(
 		return nil, err
 	}
 	_ = eventName
-	return c.sendRequest(ctx, ch.name, true, arguments...)
+	return c.sendRequest(ctx, "", ch.id, arguments...)
 }
 
 // Close removes all event handlers for this anonymous channel and cancels its
@@ -108,7 +111,7 @@ func (ch *AnonymousChannel) closeWithCause(cause error) error {
 
 	ch.ctxCancel(cause)
 	c.connReqMu.Lock()
-	delete(c.anonChans, ch.name)
+	delete(c.anonChans, ch.id)
 	c.connReqMu.Unlock()
 	return nil
 }
@@ -133,7 +136,7 @@ func (ch *AnonymousChannel) Abort(err error) error {
 	if err == nil {
 		err = context.Canceled
 	}
-	sendErr := c.sendAnonCancel(ch.ctx, ch.name, err)
+	sendErr := c.sendAnonCancel(ch.ctx, ch.id, err)
 	closeErr := ch.closeWithCause(err)
 	if sendErr != nil {
 		return fmt.Errorf("sending cancellation: %w", sendErr)

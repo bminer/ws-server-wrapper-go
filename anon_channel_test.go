@@ -9,41 +9,6 @@ import (
 	"time"
 )
 
-// ── anonChannelH type tests ───────────────────────────────────────────────────
-
-// TestAnonChannelH_UnmarshalString verifies that a JSON string is decoded as-is.
-func TestAnonChannelH_UnmarshalString(t *testing.T) {
-	var h anonChannelH
-	if err := json.Unmarshal([]byte(`"42"`), &h); err != nil {
-		t.Fatal(err)
-	}
-	if h != "42" {
-		t.Fatalf("expected \"42\", got %q", h)
-	}
-}
-
-// TestAnonChannelH_UnmarshalNumber verifies that a truthy JSON number maps to "1".
-func TestAnonChannelH_UnmarshalNumber(t *testing.T) {
-	var h anonChannelH
-	if err := json.Unmarshal([]byte(`1`), &h); err != nil {
-		t.Fatal(err)
-	}
-	if h != "1" {
-		t.Fatalf("expected \"1\", got %q", h)
-	}
-}
-
-// TestAnonChannelH_UnmarshalZero verifies that JSON 0 maps to "".
-func TestAnonChannelH_UnmarshalZero(t *testing.T) {
-	var h anonChannelH
-	if err := json.Unmarshal([]byte(`0`), &h); err != nil {
-		t.Fatal(err)
-	}
-	if h != "" {
-		t.Fatalf("expected empty string, got %q", h)
-	}
-}
-
 // ── Channel(ctx) factory tests ────────────────────────────────────────────────
 
 // TestChannelOutsideHandler verifies that Channel(ctx) returns nil when called
@@ -124,16 +89,14 @@ func TestHandlerReturnsAnonChannel(t *testing.T) {
 	if resp.RequestID == nil || *resp.RequestID != reqID {
 		t.Fatalf("expected creation response for request %d, got %+v", reqID, resp)
 	}
-	if resp.AnonymousChannel == "" {
+	if resp.AnonymousChannel == 0 {
 		t.Fatalf("expected non-empty h field, got %+v", resp)
 	}
 	if resp.ResponseData != nil || resp.ResponseError != nil {
 		t.Fatalf("creation response must not have d/e fields, got %+v", resp)
 	}
-	// Channel ID must equal strconv.Itoa(reqID)
-	expectedChanID := "1"
-	if string(resp.AnonymousChannel) != expectedChanID {
-		t.Fatalf("expected h=%q, got h=%q", expectedChanID, resp.AnonymousChannel)
+	if resp.AnonymousChannel != 1 {
+		t.Fatalf("expected h=1, got h=%d", resp.AnonymousChannel)
 	}
 
 	conn.Close(StatusNormalClosure, "done")
@@ -165,7 +128,7 @@ func TestHandlerReturnsNilDoesNotSendCreation(t *testing.T) {
 		t.Fatalf("expected response for request %d, got %+v", reqID, resp)
 	}
 	// Must be a regular resolve (d: null), not a creation response (h field)
-	if resp.AnonymousChannel != "" {
+	if resp.AnonymousChannel != 0 {
 		t.Fatalf("expected no h field, got %+v", resp)
 	}
 
@@ -204,7 +167,7 @@ func TestAnonChannelEventRouted(t *testing.T) {
 
 	// Send an event on the anonymous channel
 	conn.send(Message{
-		AnonymousChannel: "1",
+		AnonymousChannel: 1,
 		Arguments:        []json.RawMessage{[]byte(`"data"`), []byte(`"hello"`)},
 	})
 
@@ -249,7 +212,7 @@ func TestAnonChannelRequestRouted(t *testing.T) {
 	subReqID := 2
 	conn.send(Message{
 		RequestID:        &subReqID,
-		AnonymousChannel: "1",
+		AnonymousChannel: 1,
 		Arguments:        []json.RawMessage{[]byte(`"compute"`), []byte(`21`)},
 	})
 
@@ -261,7 +224,7 @@ func TestAnonChannelRequestRouted(t *testing.T) {
 		t.Fatalf("expected 42, got %v", resp.ResponseData)
 	}
 	// Response must NOT have h field
-	if resp.AnonymousChannel != "" {
+	if resp.AnonymousChannel != 0 {
 		t.Fatalf("sub-request response must not have h field, got %+v", resp)
 	}
 
@@ -297,7 +260,7 @@ func TestAnonChannelInboundAbort(t *testing.T) {
 
 	// Remote sends abort
 	conn.send(Message{
-		AnonymousChannel: "1",
+		AnonymousChannel: 1,
 		ResponseJSError:  true,
 		CancelReason: map[string]any{
 			"message": "remote aborted",
@@ -351,7 +314,7 @@ func TestAnonChannelAbort(t *testing.T) {
 
 	// Expect abort message
 	abort := conn.waitWritten(t, time.Second)
-	if abort.AnonymousChannel != "1" {
+	if abort.AnonymousChannel != 1 {
 		t.Fatalf("expected h='1', got %+v", abort)
 	}
 	if !abort.ResponseJSError {
@@ -533,7 +496,7 @@ func TestAnonChannelEmitSendsCorrectMessage(t *testing.T) {
 	if msg.Channel != "" {
 		t.Fatalf("expected no c field, got %+v", msg)
 	}
-	if msg.AnonymousChannel != "1" {
+	if msg.AnonymousChannel != 1 {
 		t.Fatalf("expected h='1', got %+v", msg)
 	}
 	if msg.RequestID != nil {
@@ -603,12 +566,12 @@ func TestUnknownAnonChannelEventSendsCancel(t *testing.T) {
 
 	// Send event to a channel ID that was never created
 	conn.send(Message{
-		AnonymousChannel: "99",
+		AnonymousChannel: 99,
 		Arguments:        []json.RawMessage{[]byte(`"data"`), []byte(`"hello"`)},
 	})
 
 	msg := conn.waitWritten(t, time.Second)
-	if msg.AnonymousChannel != "99" {
+	if msg.AnonymousChannel != 99 {
 		t.Fatalf("expected h='99', got %+v", msg)
 	}
 	if msg.CancelReason == nil {
@@ -631,7 +594,7 @@ func TestUnknownAnonChannelRequestSendsCancelAndReject(t *testing.T) {
 	subReqID := 5
 	conn.send(Message{
 		RequestID:        &subReqID,
-		AnonymousChannel: "99",
+		AnonymousChannel: 99,
 		Arguments:        []json.RawMessage{[]byte(`"compute"`)},
 	})
 
@@ -641,13 +604,13 @@ func TestUnknownAnonChannelRequestSendsCancelAndReject(t *testing.T) {
 
 	// Identify cancel vs reject
 	var cancelMsg, rejectMsg Message
-	if msg1.AnonymousChannel != "" {
+	if msg1.AnonymousChannel != 0 {
 		cancelMsg, rejectMsg = msg1, msg2
 	} else {
 		cancelMsg, rejectMsg = msg2, msg1
 	}
 
-	if cancelMsg.AnonymousChannel != "99" {
+	if cancelMsg.AnonymousChannel != 99 {
 		t.Fatalf("expected cancel with h='99', got %+v", cancelMsg)
 	}
 	if rejectMsg.RequestID == nil || *rejectMsg.RequestID != subReqID {
@@ -688,7 +651,7 @@ func TestGoAsRequestorReceivesAnonChannel(t *testing.T) {
 	// JS responds with {i: reqID, h: 1}
 	conn.send(Message{
 		RequestID:        req.RequestID,
-		AnonymousChannel: "1", // custom unmarshaller maps JS's h:1 to "1"
+		AnonymousChannel: 1,
 	})
 
 	select {
@@ -736,7 +699,7 @@ func TestGoAsRequestorEmitsOnAnonChannel(t *testing.T) {
 	req := conn.waitWritten(t, time.Second)
 	conn.send(Message{
 		RequestID:        req.RequestID,
-		AnonymousChannel: "1",
+		AnonymousChannel: 1,
 	})
 
 	var anon *AnonymousChannel
@@ -752,8 +715,8 @@ func TestGoAsRequestorEmitsOnAnonChannel(t *testing.T) {
 	}
 
 	emitted := conn.waitWritten(t, time.Second)
-	if emitted.AnonymousChannel != anonChannelH(anon.Name()) {
-		t.Fatalf("expected h=%q, got %+v", anon.Name(), emitted)
+	if emitted.AnonymousChannel == 0 {
+		t.Fatalf("expected non-zero h field, got %+v", emitted)
 	}
 	if emitted.Channel != "" {
 		t.Fatalf("event must not have c field, got %+v", emitted)
@@ -790,7 +753,7 @@ func TestGoAsRequestorReceivesAnonChannelEvent(t *testing.T) {
 	req := conn.waitWritten(t, time.Second)
 	conn.send(Message{
 		RequestID:        req.RequestID,
-		AnonymousChannel: "1",
+		AnonymousChannel: 1,
 	})
 
 	select {
@@ -801,7 +764,7 @@ func TestGoAsRequestorReceivesAnonChannelEvent(t *testing.T) {
 
 	// Remote sends event on the channel
 	conn.send(Message{
-		AnonymousChannel: anonChannelH(anon_name(req.RequestID)),
+		AnonymousChannel: *req.RequestID,
 		Arguments:        []json.RawMessage{[]byte(`"data"`), []byte(`"world"`)},
 	})
 
@@ -815,12 +778,4 @@ func TestGoAsRequestorReceivesAnonChannelEvent(t *testing.T) {
 	}
 
 	conn.Close(StatusNormalClosure, "done")
-}
-
-// anon_name returns the expected channel ID for a given request ID pointer.
-func anon_name(id *int) string {
-	if id == nil {
-		return ""
-	}
-	return string(rune('0' + *id)) // works for single-digit IDs in tests
 }

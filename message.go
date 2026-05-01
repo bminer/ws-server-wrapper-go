@@ -25,35 +25,11 @@ func (bit *weakBool) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// anonChannelH represents the "h" field in an anonymous channel message.
-// The JS library sends a bare number (e.g. 1) as the creation sentinel; Go
-// sends a string channel ID. Custom unmarshalling maps any truthy number to
-// the string "1" so that downstream code only needs to check for "".
-type anonChannelH string
-
-func (h *anonChannelH) UnmarshalJSON(data []byte) error {
-	// Try string first (Go → JS messages use a string channel ID)
-	var s string
-	if json.Unmarshal(data, &s) == nil {
-		*h = anonChannelH(s)
-		return nil
-	}
-	// Fall back to number (JS sends h:1 as creation sentinel)
-	var n float64
-	if json.Unmarshal(data, &n) == nil {
-		if n != 0 {
-			*h = "1"
-		}
-		return nil
-	}
-	return nil
-}
-
 // Message is a ws-wrapper JSON-encoded message.
 // See https://github.com/bminer/ws-wrapper/blob/master/README.md#protocol
 type Message struct {
 	Channel          string            `json:"c,omitempty"`
-	AnonymousChannel anonChannelH      `json:"h,omitempty"`
+	AnonymousChannel int               `json:"h,omitempty"`
 	Arguments        []json.RawMessage `json:"a,omitempty"` // Arguments[0] is the event name
 	RequestID        *int              `json:"i,omitempty"`
 	ResponseData     any               `json:"d,omitempty"`
@@ -171,8 +147,8 @@ func (m Message) LogValue() slog.Value {
 	const MaxArgLength = 1024
 	if eventName != "" {
 		ch := m.Channel
-		if m.AnonymousChannel != "" {
-			ch = "~" + string(m.AnonymousChannel) // prefix to distinguish anon channels
+		if m.AnonymousChannel != 0 {
+			ch = "~" + strconv.Itoa(m.AnonymousChannel) // prefix to distinguish anon channels
 		}
 		attrs = []slog.Attr{
 			slog.String("ch", ch),
