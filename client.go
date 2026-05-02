@@ -705,6 +705,7 @@ func (c *Client) handleEvent(
 		if anonID != 0 {
 			err = fmt.Errorf("no event listener for '%s' on anonymous channel %d", eventName, anonID)
 		} else if chanID == "" {
+			// chanID is "" for the main (unnamed) channel
 			err = fmt.Errorf("no event listener for '%s'", eventName)
 		} else {
 			err = fmt.Errorf("no event listener for '%s' on channel '%s'", eventName, chanID)
@@ -762,6 +763,9 @@ func (c *Client) handleEvent(
 
 		// Handle request response: check the handler error first, then decide
 		// whether the handler returned the factory anonymous channel.
+		// Pointer identity is used intentionally: the handler must return the
+		// exact *AnonymousChannel obtained from Channel(ctx) — not a copy or a
+		// different channel with the same ID.
 		var sendErr error
 		if err != nil {
 			// Handler returned an error; clean up any factory channel created
