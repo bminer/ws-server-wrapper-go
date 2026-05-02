@@ -213,9 +213,6 @@ func registerClientHandler(
 			delete(c.handlers, key)
 		}
 	} else {
-		// For anonymous channels, pass a non-empty channel name so that
-		// checkHandler validates the function signature without enforcing the
-		// reserved-event signatures (open, close, etc.).
 		chanName := key.Channel
 		if key.AnonymousChannel != 0 {
 			chanName = strconv.Itoa(key.AnonymousChannel)

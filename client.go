@@ -136,8 +136,9 @@ func (c *Client) Bind(conn Conn) {
 	}
 	c.handlersMu.Lock()
 	for _, ch := range prevAnonChans {
+		ch.client = nil
 		closeHandlersForChannel("", ch.id, c.handlers, c.handlersOnce)
-		ch.closeDetached(errRebound)
+		ch.ctxCancel(errRebound)
 	}
 	c.handlersMu.Unlock()
 
@@ -199,8 +200,9 @@ func (c *Client) close(
 	// Close all anonymous channels (snapshot-clear-then-close to avoid deadlock).
 	c.handlersMu.Lock()
 	for _, ch := range anonChans {
+		ch.client = nil
 		closeHandlersForChannel("", ch.id, c.handlers, c.handlersOnce)
-		ch.closeDetached(errClosed)
+		ch.ctxCancel(errClosed)
 	}
 	c.handlersMu.Unlock()
 
