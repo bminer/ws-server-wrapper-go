@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strconv"
 	"sync"
 )
 
@@ -287,24 +286,34 @@ func (c *Client) sendCancel(
 	})
 }
 
-// sendAnonCancel sends an anonymous channel abort message to the client.
+// sendAnonCancel sends an anonymous channel abort message to the client and
+// closes the anonymous channel, mirroring how sendCancel removes an outbound
+// request from requestResponseCh.
 func (c *Client) sendAnonCancel(ctx context.Context, chanID int, reason error) error {
 	if reason == nil {
 		reason = context.Canceled
 	}
 	c.connReqMu.Lock()
+	ch := c.anonChans[chanID]
 	conn := c.conn
 	c.connReqMu.Unlock()
 	if conn == nil {
+		if ch != nil {
+			ch.closeWithCause(reason)
+		}
 		return errClosed
 	}
-	return conn.WriteMessage(ctx, &Message{
+	err := conn.WriteMessage(ctx, &Message{
 		AnonymousChannel: chanID,
 		ResponseJSError:  true,
 		CancelReason: map[string]any{
 			"message": reason.Error(),
 		},
 	})
+	if ch != nil {
+		ch.closeWithCause(reason)
+	}
+	return err
 }
 
 // sendResolve sends a resolve / data response to a request
@@ -561,13 +570,10 @@ func (c *Client) handleMessage(ctx context.Context, msg Message) error {
 	// Get message event name if any
 	eventName := msg.EventName()
 	if eventName != "" {
-		anonID := msg.AnonymousChannel
-		chanID := msg.Channel
-		if anonID != 0 {
-			chanID = strconv.Itoa(anonID)
-		}
-		return c.handleInboundMessage(ctx, msg, eventName, chanID, anonID)
+		return c.handleEvent(ctx, msg, eventName, msg.Channel, msg.AnonymousChannel)
 	}
+	// defer close(msg.processed) cannot go to the top of this function because
+	// handleEvent creates a goroutine that is responsible for closing msg.processed.
 	defer close(msg.processed)
 
 	// Inbound anonymous channel abort: {h, x} (no RequestID needed)
@@ -576,7 +582,7 @@ func (c *Client) handleMessage(ctx context.Context, msg Message) error {
 		ch, ok := c.anonChans[msg.AnonymousChannel]
 		c.connReqMu.Unlock()
 		if ok {
-			ch.closeWithCause(msg.parseCancelReason())
+			ch.closeWithCause(msg.CancelCause())
 		}
 		return nil
 	}
@@ -586,8 +592,9 @@ func (c *Client) handleMessage(ctx context.Context, msg Message) error {
 		return nil // ignore message with no request ID
 	}
 
-	// Anonymous channel creation response: {i, h} (no CancelReason, no Arguments)
-	if msg.AnonymousChannel != 0 && msg.CancelReason == nil {
+	// Anonymous channel creation response: {i, h} (no Arguments; CancelReason
+	// was handled above so it is nil here)
+	if msg.AnonymousChannel != 0 {
 		chanID := *msg.RequestID
 		c.connReqMu.Lock()
 		respCh, ok := c.requestResponseCh[*msg.RequestID]
@@ -638,10 +645,10 @@ func (c *Client) handleMessage(ctx context.Context, msg Message) error {
 	return nil
 }
 
-// handleInboundMessage handles an inbound event or request on any channel.
-// chanID is the string channel name for handler routing; anonID is non-zero for
-// anonymous channels and is used for map lookups and abort messages.
-func (c *Client) handleInboundMessage(
+// handleEvent handles an inbound event or request on any channel.
+// chanID is the string channel name for named channels, or "" for anonymous
+// channels (anonID is used for map lookups and abort messages in that case).
+func (c *Client) handleEvent(
 	ctx context.Context, msg Message, eventName string,
 	chanID string, anonID int,
 ) error {
@@ -654,7 +661,7 @@ func (c *Client) handleInboundMessage(
 		c.connReqMu.Unlock()
 		if !ok {
 			defer close(msg.processed)
-			err := fmt.Errorf("anonymous channel '%s' not found", chanID)
+			err := fmt.Errorf("anonymous channel %d not found", anonID)
 			_ = c.sendAnonCancel(ctx, anonID, err)
 			if msg.RequestID != nil {
 				return c.sendReject(ctx, msg.RequestID, err)
@@ -663,13 +670,9 @@ func (c *Client) handleInboundMessage(
 		}
 	}
 
-	// Look up handler (client-specific first)
-	var handlerID handlerName
-	if anonID != 0 {
-		handlerID = handlerName{AnonymousChannel: anonID, Event: eventName}
-	} else {
-		handlerID = handlerName{Channel: chanID, Event: eventName}
-	}
+	// Look up handler (client-specific first). For anonymous channels chanID is
+	// "" so the Channel field is empty and AnonymousChannel holds the numeric ID.
+	handlerID := handlerName{Channel: chanID, AnonymousChannel: anonID, Event: eventName}
 	c.handlersMu.Lock()
 	handler, ok := c.handlersOnce[handlerID]
 	if ok {
@@ -698,9 +701,13 @@ func (c *Client) handleInboundMessage(
 	// Handle missing handler
 	if handler == nil {
 		defer close(msg.processed)
-		err := fmt.Errorf("no event listener for '%s' on channel '%s'", eventName, chanID)
-		if chanID == "" {
+		var err error
+		if anonID != 0 {
+			err = fmt.Errorf("no event listener for '%s' on anonymous channel %d", eventName, anonID)
+		} else if chanID == "" {
 			err = fmt.Errorf("no event listener for '%s'", eventName)
+		} else {
+			err = fmt.Errorf("no event listener for '%s' on channel '%s'", eventName, chanID)
 		}
 		if msg.RequestID != nil {
 			return c.sendReject(ctx, msg.RequestID, err)
@@ -724,13 +731,12 @@ func (c *Client) handleInboundMessage(
 		c.inboundCancelsMu.Unlock()
 
 		newChanID = *msg.RequestID
-		factory := func() *AnonymousChannel {
+		handlerCtx = context.WithValue(handlerCtx, anonChannelKey{}, func() *AnonymousChannel {
 			if anonChan == nil {
 				anonChan = newAnonymousChannel(ctx, newChanID, c)
 			}
 			return anonChan
-		}
-		handlerCtx = context.WithValue(handlerCtx, anonChannelKey{}, factory)
+		})
 	}
 
 	go func() {
@@ -740,9 +746,12 @@ func (c *Client) handleInboundMessage(
 			cancel(context.Canceled)
 		}
 
+		// For event messages (not requests), clean up any factory channel that was
+		// created but not returned, then return. inboundCancels is only populated
+		// for requests, so there is nothing to remove here.
 		if msg.RequestID == nil {
 			if anonChan != nil {
-				anonChan.ctxCancel(context.Canceled) // cleanup unused factory
+				anonChan.closeWithCause(context.Canceled)
 			}
 			return
 		}
@@ -751,39 +760,36 @@ func (c *Client) handleInboundMessage(
 		delete(c.inboundCancels, *msg.RequestID)
 		c.inboundCancelsMu.Unlock()
 
-		// Check if handler returned the factory anonymous channel
-		if anon, ok := result.(*AnonymousChannel); ok && anon != nil && anon == anonChan {
+		// Handle request response: check the handler error first, then decide
+		// whether the handler returned the factory anonymous channel.
+		var sendErr error
+		if err != nil {
+			// Handler returned an error; clean up any factory channel created
+			if anonChan != nil {
+				anonChan.closeWithCause(context.Canceled)
+			}
+			sendErr = c.sendReject(ctx, msg.RequestID, err)
+		} else if result == anonChan && anonChan != nil {
+			// Handler returned the factory anonymous channel; register and notify
 			c.connReqMu.Lock()
-			c.anonChans[newChanID] = anon
+			c.anonChans[newChanID] = anonChan
 			c.connReqMu.Unlock()
-			sendErr := c.sendResolveAnon(ctx, msg.RequestID)
-			if sendErr != nil {
-				sendErr = fmt.Errorf("responding to request: %w", sendErr)
-				c.emitError(sendErr)
-				if c.server != nil {
-					c.server.emitError(c, sendErr)
-				}
-				c.close(StatusInternalError, sendErr.Error(), false, false)
-			}
-			return
-		}
-		// Clean up unused factory channel if one was created
-		if anonChan != nil {
-			anonChan.ctxCancel(context.Canceled)
-		}
-
-		if err != nil {
-			err = c.sendReject(ctx, msg.RequestID, err)
+			sendErr = c.sendResolveAnon(ctx, msg.RequestID)
 		} else {
-			err = c.sendResolve(ctx, msg.RequestID, result)
-		}
-		if err != nil {
-			err = fmt.Errorf("responding to request: %w", err)
-			c.emitError(err)
-			if c.server != nil {
-				c.server.emitError(c, err)
+			// Handler returned a regular value (or nil / a different anon channel);
+			// close the factory channel if one was created
+			if anonChan != nil {
+				anonChan.closeWithCause(context.Canceled)
 			}
-			c.close(StatusInternalError, err.Error(), false, false)
+			sendErr = c.sendResolve(ctx, msg.RequestID, result)
+		}
+		if sendErr != nil {
+			sendErr = fmt.Errorf("responding to request: %w", sendErr)
+			c.emitError(sendErr)
+			if c.server != nil {
+				c.server.emitError(c, sendErr)
+			}
+			c.close(StatusInternalError, sendErr.Error(), false, false)
 		}
 	}()
 	return nil

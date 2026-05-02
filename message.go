@@ -97,11 +97,13 @@ func (m Message) Response() (any, error) {
 	return nil, errors.New(errMsg)
 }
 
-// parseCancelReason extracts a cancel/abort reason from the message's
-// CancelReason and ResponseJSError fields.
-func (m Message) parseCancelReason() error {
+// CancelCause returns the cancel/abort reason from this message as an error.
+// Works for both inbound request cancellations ({i, x}) and anonymous channel
+// aborts ({h, x}). Returns "message is not a cancellation" if CancelReason is
+// nil; returns context.Canceled if the reason cannot be parsed.
+func (m Message) CancelCause() error {
 	if m.CancelReason == nil {
-		return context.Canceled
+		return errors.New("message is not a cancellation")
 	}
 	// Handle JavaScript error
 	if m.ResponseJSError {
@@ -126,15 +128,6 @@ func (m Message) parseCancelReason() error {
 		return context.Canceled
 	}
 	return errors.New(errMsg)
-}
-
-// CancelCause returns the reason for this cancellation message as an error.
-// Returns context.Canceled if no reason is provided.
-func (m Message) CancelCause() error {
-	if m.RequestID == nil || m.CancelReason == nil {
-		return errors.New("message is not a cancellation")
-	}
-	return m.parseCancelReason()
 }
 
 func (m Message) LogValue() slog.Value {

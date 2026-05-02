@@ -135,6 +135,64 @@ func TestHandlerReturnsNilDoesNotSendCreation(t *testing.T) {
 	conn.Close(StatusNormalClosure, "done")
 }
 
+// TestHandlerCreatesAnonChannelButReturnsNil verifies that when a handler
+// obtains an anonymous channel via Channel(ctx) and registers event handlers on
+// it, but then returns nil instead of the channel, the anonymous channel and
+// all of its registered event handlers are properly cleaned up.
+func TestHandlerCreatesAnonChannelButReturnsNil(t *testing.T) {
+	server := NewServer()
+	conn := newMockConn()
+
+	var capturedClient *Client
+	server.On("open", func(c *Client) {
+		capturedClient = c
+	})
+
+	var capturedCh *AnonymousChannel
+	server.On("noChannel", func(ctx context.Context) (*AnonymousChannel, error) {
+		capturedCh = Channel(ctx)
+		// Register an event handler on the anonymous channel
+		capturedCh.On("data", func(v string) error { return nil })
+		// Deliberately not returning capturedCh
+		return nil, nil
+	})
+
+	if err := server.Accept(conn); err != nil {
+		t.Fatal(err)
+	}
+
+	reqID := 1
+	conn.send(Message{
+		RequestID: &reqID,
+		Arguments: []json.RawMessage{[]byte(`"noChannel"`)},
+	})
+
+	// The response is sent only after cleanup, so receiving it confirms cleanup
+	// has already happened.
+	resp := conn.waitWritten(t, time.Second)
+	if resp.AnonymousChannel != 0 {
+		t.Fatalf("expected no creation response (h field), got %+v", resp)
+	}
+
+	// The anonymous channel's context must be cancelled.
+	select {
+	case <-capturedCh.Context().Done():
+	case <-time.After(time.Second):
+		t.Fatal("anonymous channel context was not cancelled after handler returned nil")
+	}
+
+	// The registered 'data' event handler must have been removed.
+	capturedClient.handlersMu.Lock()
+	key := handlerName{AnonymousChannel: reqID, Event: "data"}
+	_, found := capturedClient.handlers[key]
+	capturedClient.handlersMu.Unlock()
+	if found {
+		t.Fatal("expected 'data' handler to be cleaned up when handler returned nil")
+	}
+
+	conn.Close(StatusNormalClosure, "done")
+}
+
 // ── Routing events/requests to anonymous channel handlers ────────────────────
 
 // TestAnonChannelEventRouted verifies that inbound {h, a} messages are routed

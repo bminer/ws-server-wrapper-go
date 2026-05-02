@@ -126,8 +126,8 @@ func (ch *AnonymousChannel) closeDetached(cause error) {
 }
 
 
-// The provided error is sent as the abort reason. If err is nil, it defaults
-// to context.Canceled.
+// Abort sends an abort message to the remote end with the provided reason and
+// closes this anonymous channel. If err is nil, it defaults to context.Canceled.
 func (ch *AnonymousChannel) Abort(err error) error {
 	c := ch.client
 	if c == nil {
@@ -136,12 +136,10 @@ func (ch *AnonymousChannel) Abort(err error) error {
 	if err == nil {
 		err = context.Canceled
 	}
-	sendErr := c.sendAnonCancel(ch.ctx, ch.id, err)
-	closeErr := ch.closeWithCause(err)
-	if sendErr != nil {
+	if sendErr := c.sendAnonCancel(ch.ctx, ch.id, err); sendErr != nil {
 		return fmt.Errorf("sending cancellation: %w", sendErr)
 	}
-	return closeErr
+	return nil
 }
 
 // Context returns a context that is cancelled when this anonymous channel is

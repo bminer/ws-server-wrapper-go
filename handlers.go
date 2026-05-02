@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strconv"
 	"sync"
 )
 
@@ -212,10 +213,15 @@ func registerClientHandler(
 			delete(c.handlers, key)
 		}
 	} else {
-		if key.AnonymousChannel == 0 {
-			if err := checkHandler(key.Channel, key.Event, handler); err != nil {
-				panic(err)
-			}
+		// For anonymous channels, pass a non-empty channel name so that
+		// checkHandler validates the function signature without enforcing the
+		// reserved-event signatures (open, close, etc.).
+		chanName := key.Channel
+		if key.AnonymousChannel != 0 {
+			chanName = strconv.Itoa(key.AnonymousChannel)
+		}
+		if err := checkHandler(chanName, key.Event, handler); err != nil {
+			panic(err)
 		}
 		c.handlersMu.Lock()
 		defer c.handlersMu.Unlock()
