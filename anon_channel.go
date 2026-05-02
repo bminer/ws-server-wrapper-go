@@ -10,10 +10,10 @@ import (
 // *AnonymousChannel in response to a request. It allows streaming or
 // multi-message patterns over a single WebSocket connection.
 type AnonymousChannel struct {
-	id            int
-	ClientChannel // inherits name (string form of id) and Name()
-	ctx           context.Context
-	ctxCancel     context.CancelCauseFunc
+	id        int
+	client    *Client
+	ctx       context.Context
+	ctxCancel context.CancelCauseFunc
 }
 
 // newAnonymousChannel creates an AnonymousChannel with the given ID and client.
@@ -26,10 +26,10 @@ func newAnonymousChannel(
 ) *AnonymousChannel {
 	ctx, ctxCancel := context.WithCancelCause(ctx)
 	return &AnonymousChannel{
-		id:            id,
-		ClientChannel: ClientChannel{name: strconv.Itoa(id), client: c},
-		ctx:           ctx,
-		ctxCancel:     ctxCancel,
+		id:        id,
+		client:    c,
+		ctx:       ctx,
+		ctxCancel: ctxCancel,
 	}
 }
 
@@ -62,7 +62,7 @@ func (ch *AnonymousChannel) Once(eventName string, handler any) *AnonymousChanne
 func (ch *AnonymousChannel) Emit(ctx context.Context, arguments ...any) error {
 	c := ch.client
 	if c == nil {
-		return ChannelClosedError{Channel: ch.name}
+		return ChannelClosedError{Channel: strconv.Itoa(ch.id)}
 	}
 	_, err := checkEventName(arguments)
 	if err != nil {
@@ -79,7 +79,7 @@ func (ch *AnonymousChannel) Request(
 ) (any, error) {
 	c := ch.client
 	if c == nil {
-		return nil, ChannelClosedError{Channel: ch.name}
+		return nil, ChannelClosedError{Channel: strconv.Itoa(ch.id)}
 	}
 	eventName, err := checkEventName(arguments)
 	if err != nil {
@@ -124,7 +124,6 @@ func (ch *AnonymousChannel) closeDetached(cause error) {
 	ch.client = nil
 	ch.ctxCancel(cause)
 }
-
 
 // Abort sends an abort message to the remote end with the provided reason and
 // closes this anonymous channel. If err is nil, it defaults to context.Canceled.

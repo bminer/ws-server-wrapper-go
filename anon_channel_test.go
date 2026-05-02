@@ -724,10 +724,6 @@ func TestGoAsRequestorReceivesAnonChannel(t *testing.T) {
 		if anon == nil {
 			t.Fatal("expected non-nil *AnonymousChannel")
 		}
-		// Channel ID should be the string form of the request ID
-		if anon.Name() != "1" {
-			t.Fatalf("expected Name()='1', got %q", anon.Name())
-		}
 		_ = anon
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for anonymous channel result")
