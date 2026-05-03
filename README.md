@@ -108,6 +108,45 @@ ioChannel := wsServer.Of("io")
 _ = ioChannel.Close()
 ```
 
+## Anonymous Channels
+
+Anonymous channels let a handler stream events or exchange multiple messages
+with the requesting client over a single WebSocket connection. Return a
+`*AnonymousChannel` from a handler to signal that data will follow
+asynchronously:
+
+```go
+wsServer.On("subscribe", func(ctx context.Context, topic string) (*wrapper.AnonymousChannel, error) {
+    ch := wrapper.Channel(ctx) // obtain the anonymous channel for this request
+    go func() {
+        defer ch.Close()
+        for _, update := range fetchUpdates(topic) {
+            if err := ch.Emit(ch.Context(), "data", update); err != nil {
+                return // client disconnected or aborted
+            }
+        }
+        ch.Emit(ch.Context(), "end")
+    }()
+    return ch, nil
+})
+```
+
+On the client side, the `Request` call resolves to a `*AnonymousChannel`:
+
+```go
+resp, err := client.Request(ctx, "subscribe", "news")
+if ch, ok := resp.(*wrapper.AnonymousChannel); ok {
+    ch.On("data", func(update string) error {
+        fmt.Println("update:", update)
+        return nil
+    })
+}
+```
+
+Either side can abort the channel early with `ch.Abort(err)`, which sends a
+cancel message to the remote end and closes the channel. `ch.Context()` returns
+a context that is cancelled when the channel closes or is aborted.
+
 ## Per-Client Handlers
 
 Register handlers on an individual `*Client`.
