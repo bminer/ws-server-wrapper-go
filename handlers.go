@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strconv"
 	"sync"
 )
 
@@ -40,11 +41,13 @@ func IsReservedEvent(eventName string) bool {
 	}
 }
 
-// handlerName is a unique name for a handler function having the specified
-// channel and event name.
+// handlerName is a unique key for a handler function. For named and main
+// channels AnonymousChannel is zero; for anonymous (request-scoped) channels
+// Channel is empty and AnonymousChannel holds the numeric channel ID.
 type handlerName struct {
-	Channel string
-	Event   string
+	Channel          string
+	AnonymousChannel int
+	Event            string
 }
 
 var errorType = reflect.TypeFor[error]()
@@ -177,17 +180,52 @@ func emitReserved(
 // channel from both persistent and one-time handler maps.
 func closeHandlersForChannel(
 	channel string,
+	anonID int,
 	handlers map[handlerName]any,
 	handlersOnce map[handlerName]any,
 ) {
 	for key := range handlers {
-		if key.Channel == channel {
+		if key.Channel == channel && key.AnonymousChannel == anonID {
 			delete(handlers, key)
 		}
 	}
 	for key := range handlersOnce {
-		if key.Channel == channel {
+		if key.Channel == channel && key.AnonymousChannel == anonID {
 			delete(handlersOnce, key)
+		}
+	}
+}
+
+// registerClientHandler adds a handler for the given channel and event to the
+// appropriate handler map. It acquires the client's handlersMu.
+func registerClientHandler(
+	c *Client,
+	key handlerName,
+	handler any,
+	once bool,
+) {
+	if handler == nil {
+		c.handlersMu.Lock()
+		defer c.handlersMu.Unlock()
+		if once {
+			delete(c.handlersOnce, key)
+		} else {
+			delete(c.handlers, key)
+		}
+	} else {
+		chanName := key.Channel
+		if key.AnonymousChannel != 0 {
+			chanName = strconv.Itoa(key.AnonymousChannel)
+		}
+		if err := checkHandler(chanName, key.Event, handler); err != nil {
+			panic(err)
+		}
+		c.handlersMu.Lock()
+		defer c.handlersMu.Unlock()
+		if once {
+			c.handlersOnce[key] = handler
+		} else {
+			c.handlers[key] = handler
 		}
 	}
 }

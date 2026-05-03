@@ -28,15 +28,16 @@ func (bit *weakBool) UnmarshalJSON(data []byte) error {
 // Message is a ws-wrapper JSON-encoded message.
 // See https://github.com/bminer/ws-wrapper/blob/master/README.md#protocol
 type Message struct {
-	Channel         string            `json:"c,omitempty"`
-	Arguments       []json.RawMessage `json:"a,omitempty"` // Arguments[0] is the event name
-	RequestID       *int              `json:"i,omitempty"`
-	ResponseData    any               `json:"d,omitempty"`
-	ResponseError   any               `json:"e,omitempty"`
-	ResponseJSError weakBool          `json:"_,omitempty"`
-	CancelReason    any               `json:"x,omitempty"` // Request cancellation signal
-	IgnoreIfFalse   *weakBool         `json:"ws-wrapper,omitempty"`
-	processed       chan struct{}
+	Channel          string            `json:"c,omitempty"`
+	AnonymousChannel int               `json:"h,omitempty"`
+	Arguments        []json.RawMessage `json:"a,omitempty"` // Arguments[0] is the event name
+	RequestID        *int              `json:"i,omitempty"`
+	ResponseData     any               `json:"d,omitempty"`
+	ResponseError    any               `json:"e,omitempty"`
+	ResponseJSError  weakBool          `json:"_,omitempty"`
+	CancelReason     any               `json:"x,omitempty"` // Request cancellation signal
+	IgnoreIfFalse    *weakBool         `json:"ws-wrapper,omitempty"`
+	processed        chan struct{}
 }
 
 // EventName returns the name of the event or empty string if the message is
@@ -96,10 +97,12 @@ func (m Message) Response() (any, error) {
 	return nil, errors.New(errMsg)
 }
 
-// CancelCause returns the reason for this cancellation message as an error.
-// Returns context.Canceled if no reason is provided.
+// CancelCause returns the cancel/abort reason from this message as an error.
+// Works for both inbound request cancellations ({i, x}) and anonymous channel
+// aborts ({h, x}). Returns "message is not a cancellation" if CancelReason is
+// nil; returns context.Canceled if the reason cannot be parsed.
 func (m Message) CancelCause() error {
-	if m.RequestID == nil || m.CancelReason == nil {
+	if m.CancelReason == nil {
 		return errors.New("message is not a cancellation")
 	}
 	// Handle JavaScript error
@@ -136,9 +139,16 @@ func (m Message) LogValue() slog.Value {
 	eventName := m.EventName()
 	const MaxArgLength = 1024
 	if eventName != "" {
-		attrs = []slog.Attr{
-			slog.String("ch", m.Channel),
-			slog.String("event", eventName),
+		if m.AnonymousChannel != 0 {
+			attrs = []slog.Attr{
+				slog.Int("anonCh", m.AnonymousChannel),
+				slog.String("event", eventName),
+			}
+		} else {
+			attrs = []slog.Attr{
+				slog.String("ch", m.Channel),
+				slog.String("event", eventName),
+			}
 		}
 		for i, arg := range m.HandlerArguments() {
 			if len(arg) > MaxArgLength {
@@ -157,20 +167,36 @@ func (m Message) LogValue() slog.Value {
 		if m.RequestID != nil {
 			attrs = append(attrs, slog.Int("reqID", *m.RequestID))
 		}
+	} else if m.AnonymousChannel != 0 && m.CancelReason != nil {
+		// Anonymous channel abort: {h, x}
+		attrs = []slog.Attr{
+			slog.Int("anonCh", m.AnonymousChannel),
+			slog.Any("cancelReason", m.CancelReason),
+			slog.Bool("jsError", bool(m.ResponseJSError)),
+		}
 	} else if m.RequestID != nil {
-		if m.CancelReason != nil {
+		if m.AnonymousChannel != 0 {
+			// Anonymous channel creation: {i, h} (channel ID == request ID)
+			attrs = []slog.Attr{
+				slog.Int("reqID", *m.RequestID),
+				slog.Bool("anonChCreated", true),
+			}
+		} else if m.CancelReason != nil {
+			// Request cancellation: {i, x}
 			attrs = []slog.Attr{
 				slog.Int("reqID", *m.RequestID),
 				slog.Any("cancelReason", m.CancelReason),
 				slog.Bool("jsError", bool(m.ResponseJSError)),
 			}
 		} else if m.ResponseError != nil {
+			// Response rejection: {i, e}
 			attrs = []slog.Attr{
 				slog.Int("reqID", *m.RequestID),
 				slog.Any("error", m.ResponseError),
 				slog.Bool("jsError", bool(m.ResponseJSError)),
 			}
 		} else {
+			// Response resolution: {i, d}
 			attrs = []slog.Attr{
 				slog.Int("reqID", *m.RequestID),
 				slog.Any("data", m.ResponseData),

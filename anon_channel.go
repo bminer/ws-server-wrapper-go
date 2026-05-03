@@ -1,0 +1,165 @@
+package wrapper
+
+import (
+	"context"
+	"errors"
+	"strconv"
+)
+
+// errNotReady is returned by Emit and Request when called before the anonymous
+// channel has been returned by the handler.
+var errNotReady = errors.New("anonymous channel not yet ready")
+
+// AnonymousChannel is a request-scoped channel created when a handler returns
+// *AnonymousChannel in response to a request. It allows streaming or
+// multi-message patterns over a single WebSocket connection.
+//
+// Emit and Request are only available once the channel has been delivered to
+// the requestor (i.e. after the handler returns it). Before that point, both
+// methods return errNotReady. On and Once may be called freely at any time,
+// including inside the handler before the channel is returned.
+type AnonymousChannel struct {
+	id        int
+	client    *Client
+	ctx       context.Context
+	ctxCancel context.CancelCauseFunc
+	ready     bool // true once the creation response has been sent to the requestor
+}
+
+// newAnonymousChannel creates an AnonymousChannel with the given ID and client.
+// The channel's context is derived from ctx. Pass the client connection context
+// so the channel stays alive as long as the connection is open; when the
+// connection closes, closeWithCause is called explicitly via ch.ctxCancel.
+func newAnonymousChannel(
+	ctx context.Context,
+	reqCtx context.Context,
+	id int,
+	c *Client,
+) *AnonymousChannel {
+	ctx, ctxCancel := context.WithCancelCause(ctx)
+	anon := &AnonymousChannel{
+		id:     id,
+		client: c,
+		ctx:    ctx,
+	}
+	// When the caller's request context is cancelled, abort the anonymous
+	// channel.
+	stopReqCtxWatch := context.AfterFunc(reqCtx, func() {
+		_ = anon.Abort(context.Cause(reqCtx))
+	})
+	anon.ctxCancel = func(cause error) {
+		if stopReqCtxWatch != nil {
+			stopReqCtxWatch()
+			stopReqCtxWatch = nil
+		}
+		ctxCancel(cause)
+	}
+	return anon
+}
+
+// On adds an event handler for the specified event on this anonymous channel.
+// See ClientChannel.On for handler signature details.
+func (ch *AnonymousChannel) On(eventName string, handler any) *AnonymousChannel {
+	c := ch.client
+	if c != nil {
+		key := handlerName{AnonymousChannel: ch.id, Event: eventName}
+		registerClientHandler(c, key, handler, false)
+	}
+	return ch
+}
+
+// Once adds a one-time event handler for the specified event on this anonymous
+// channel. See ClientChannel.On for handler signature details.
+func (ch *AnonymousChannel) Once(eventName string, handler any) *AnonymousChannel {
+	c := ch.client
+	if c != nil {
+		key := handlerName{AnonymousChannel: ch.id, Event: eventName}
+		registerClientHandler(c, key, handler, true)
+	}
+	return ch
+}
+
+// Emit sends an event on this anonymous channel. The passed context can be used
+// to cancel writing the message to the client. The first argument must be
+// the event name string. Returns an error if the channel is not yet ready,
+// is closed, or if the message could not be sent.
+func (ch *AnonymousChannel) Emit(ctx context.Context, arguments ...any) error {
+	if !ch.ready {
+		return errNotReady
+	}
+	c := ch.client
+	if c == nil {
+		return ChannelClosedError{Channel: strconv.Itoa(ch.id)}
+	}
+	_, err := checkEventName(arguments)
+	if err != nil {
+		return err
+	}
+	return c.sendEvent(ctx, "", ch.id, arguments...)
+}
+
+// Request sends a request on this anonymous channel and returns the response.
+// The passed context can be used to cancel the request. The first argument must
+// be the event name string. Returns an error if the channel is not yet ready
+// or is closed.
+func (ch *AnonymousChannel) Request(
+	ctx context.Context, arguments ...any,
+) (any, error) {
+	if !ch.ready {
+		return nil, errNotReady
+	}
+	c := ch.client
+	if c == nil {
+		return nil, ChannelClosedError{Channel: strconv.Itoa(ch.id)}
+	}
+	eventName, err := checkEventName(arguments)
+	if err != nil {
+		return nil, err
+	}
+	_ = eventName
+	return c.sendRequest(ctx, "", ch.id, arguments...)
+}
+
+// Close removes all event handlers for this anonymous channel and cancels its
+// context. It does NOT send an abort message to the remote end; use Abort for
+// that. Close is idempotent and safe to call multiple times.
+func (ch *AnonymousChannel) Close() error {
+	ch.closeWithCause(context.Canceled)
+	return nil
+}
+
+// closeWithCause closes the anonymous channel with a specific cause. This is
+// used internally when the connection closes or when an abort is received from
+// the remote end; it does not send an abort message.
+func (ch *AnonymousChannel) closeWithCause(cause error) {
+	c := ch.client
+	if c == nil {
+		return // already closed
+	}
+	ch.client = nil
+	c.handlersMu.Lock()
+	closeHandlersForChannel("", ch.id, c.handlers, c.handlersOnce)
+	c.handlersMu.Unlock()
+
+	ch.ctxCancel(cause)
+	c.connReqMu.Lock()
+	delete(c.anonChans, ch.id)
+	c.connReqMu.Unlock()
+}
+
+// Abort sends an abort message to the remote end with the provided reason and
+// closes this anonymous channel. If err is nil, it defaults to context.Canceled.
+func (ch *AnonymousChannel) Abort(err error) error {
+	c := ch.client
+	if c == nil {
+		return nil // already closed
+	}
+	return c.sendAnonCancel(ch.ctx, ch.id, err)
+}
+
+// Context returns a context that is cancelled when this anonymous channel is
+// closed or aborted. The cancellation cause reflects the abort reason when the
+// remote end sends an abort message.
+func (ch *AnonymousChannel) Context() context.Context {
+	return ch.ctx
+}
