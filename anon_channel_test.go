@@ -480,6 +480,79 @@ func TestAnonChannelCloseIdempotent(t *testing.T) {
 	conn.Close(StatusNormalClosure, "done")
 }
 
+// TestAnonChannelEmitBeforeReady verifies that Emit called inside the handler
+// (before the channel is returned) returns errNotReady.
+func TestAnonChannelEmitBeforeReady(t *testing.T) {
+	server := NewServer()
+	conn := newMockConn()
+
+	emitErr := make(chan error, 1)
+	server.On("stream", func(ctx context.Context) (*AnonymousChannel, error) {
+		ch := Channel(ctx)
+		emitErr <- ch.Emit(ctx, "premature")
+		return ch, nil
+	})
+
+	if err := server.Accept(conn); err != nil {
+		t.Fatal(err)
+	}
+
+	reqID := 1
+	conn.send(Message{
+		RequestID: &reqID,
+		Arguments: []json.RawMessage{[]byte(`"stream"`)},
+	})
+	conn.waitWritten(t, time.Second) // consume creation response
+
+	select {
+	case err := <-emitErr:
+		if !errors.Is(err, errNotReady) {
+			t.Fatalf("expected errNotReady, got %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("handler not called")
+	}
+
+	conn.Close(StatusNormalClosure, "done")
+}
+
+// TestAnonChannelRequestBeforeReady verifies that Request called inside the
+// handler (before the channel is returned) returns errNotReady.
+func TestAnonChannelRequestBeforeReady(t *testing.T) {
+	server := NewServer()
+	conn := newMockConn()
+
+	requestErr := make(chan error, 1)
+	server.On("stream", func(ctx context.Context) (*AnonymousChannel, error) {
+		ch := Channel(ctx)
+		_, err := ch.Request(ctx, "premature")
+		requestErr <- err
+		return ch, nil
+	})
+
+	if err := server.Accept(conn); err != nil {
+		t.Fatal(err)
+	}
+
+	reqID := 1
+	conn.send(Message{
+		RequestID: &reqID,
+		Arguments: []json.RawMessage{[]byte(`"stream"`)},
+	})
+	conn.waitWritten(t, time.Second) // consume creation response
+
+	select {
+	case err := <-requestErr:
+		if !errors.Is(err, errNotReady) {
+			t.Fatalf("expected errNotReady, got %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("handler not called")
+	}
+
+	conn.Close(StatusNormalClosure, "done")
+}
+
 // TestAnonChannelEmitAfterClose verifies that Emit on a closed channel returns
 // ChannelClosedError.
 func TestAnonChannelEmitAfterClose(t *testing.T) {
@@ -832,4 +905,127 @@ func TestGoAsRequestorReceivesAnonChannelEvent(t *testing.T) {
 	}
 
 	conn.Close(StatusNormalClosure, "done")
+}
+
+// ── Request context cancellation aborts outbound anonymous channel ─────────────
+
+// TestOutboundRequestCtxCancelAbortsAnonChannel verifies that when the context
+// passed to Request is cancelled after the remote responds with an anonymous
+// channel, an abort message {h, x} is sent to the remote and the channel's
+// context is cancelled with the same cause.
+func TestOutboundRequestCtxCancelAbortsAnonChannel(t *testing.T) {
+	client := NewClient(nil)
+	conn := newMockConn()
+	client.Bind(conn)
+
+	ctx, cancel := context.WithCancelCause(context.Background())
+
+	result := make(chan *AnonymousChannel, 1)
+	go func() {
+		resp, err := client.Request(ctx, "stream")
+		if err != nil {
+			return
+		}
+		result <- resp.(*AnonymousChannel)
+	}()
+
+	// Wait for the outbound request and respond with a creation response.
+	req := conn.waitWritten(t, time.Second)
+	if req.RequestID == nil {
+		t.Fatalf("expected outbound request, got %+v", req)
+	}
+	conn.send(Message{RequestID: req.RequestID, AnonymousChannel: 1})
+
+	var anon *AnonymousChannel
+	select {
+	case anon = <-result:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for anonymous channel")
+	}
+
+	// Cancel the request context.
+	abortCause := errors.New("caller cancelled")
+	cancel(abortCause)
+
+	// An abort message must be sent to the remote.
+	abort := conn.waitWritten(t, time.Second)
+	if abort.AnonymousChannel != *req.RequestID {
+		t.Fatalf("expected abort for channel %d, got %+v", *req.RequestID, abort)
+	}
+	if !abort.ResponseJSError {
+		t.Fatal("expected abort encoded as JS error")
+	}
+	if exp := map[string]any{"message": abortCause.Error()}; !reflect.DeepEqual(exp, abort.CancelReason) {
+		t.Fatalf("expected cancel reason %v, got %v", exp, abort.CancelReason)
+	}
+	if abort.RequestID != nil {
+		t.Fatalf("abort must not have i field, got %+v", abort)
+	}
+
+	// The channel context must be cancelled with the abort cause.
+	select {
+	case <-anon.Context().Done():
+		if cause := context.Cause(anon.Context()); cause == nil || cause.Error() != abortCause.Error() {
+			t.Fatalf("expected cause %q, got %v", abortCause, cause)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("anon channel context was not cancelled")
+	}
+
+	conn.Close(StatusNormalClosure, "done")
+}
+
+// TestOutboundRequestConnectionCloseBeforeCtxCancelIsHarmless verifies that
+// when the connection closes before the request context is cancelled, the
+// subsequent cancellation does not send a spurious abort message.
+func TestOutboundRequestConnectionCloseBeforeCtxCancelIsHarmless(t *testing.T) {
+	client := NewClient(nil)
+	conn := newMockConn()
+	client.Bind(conn)
+
+	ctx, cancel := context.WithCancelCause(context.Background())
+	defer cancel(nil)
+
+	result := make(chan *AnonymousChannel, 1)
+	go func() {
+		resp, err := client.Request(ctx, "stream")
+		if err != nil {
+			return
+		}
+		result <- resp.(*AnonymousChannel)
+	}()
+
+	req := conn.waitWritten(t, time.Second)
+	conn.send(Message{RequestID: req.RequestID, AnonymousChannel: 1})
+
+	var anon *AnonymousChannel
+	select {
+	case anon = <-result:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for anonymous channel")
+	}
+
+	// Close the connection before cancelling the context.
+	_ = client.Close(StatusNormalClosure, "done")
+
+	// Now cancel the request context.
+	cancel(errors.New("too late"))
+
+	// The channel context must already be cancelled (due to connection close).
+	select {
+	case <-anon.Context().Done():
+	case <-time.After(time.Second):
+		t.Fatal("anon channel context was not cancelled after connection close")
+	}
+
+	// No further messages should be written to the (already closed) connection.
+	select {
+	case msg := <-conn.writeCh:
+		// The Close() call itself sends a close frame — drain any legitimate
+		// close-related writes but fail on abort messages.
+		if msg.CancelReason != nil {
+			t.Fatalf("unexpected abort message after connection close: %+v", msg)
+		}
+	case <-time.After(50 * time.Millisecond):
+	}
 }

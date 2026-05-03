@@ -17,24 +17,33 @@ var errRebound = errors.New("client bound to new connection")
 // errClosed is returned when an operation is attempted on a closed connection.
 var errClosed = errors.New("connection closed")
 
+// outboundRequest tracks a pending outbound request, pairing the response
+// channel with the context that was passed to Request/sendRequest. The context
+// is used to abort the resulting AnonymousChannel if the caller cancels before
+// the channel is closed.
+type outboundRequest struct {
+	respCh chan messageResponse
+	ctx    context.Context
+}
+
 // Client represents a WebSocket client
 type Client struct {
-	ClientChannel                     // the "main" client channel with no name
-	connReqMu         sync.Mutex      // protects ctx, Conn, requests, and anonChans
-	ctx               context.Context // cancelled when the connection is closed
-	ctxCancel         func(error)     // called when the connection is closed
-	conn              Conn            // WebSocket connection; set `nil` on close
-	requestID         int             // auto-incrementing request ID
-	requestResponseCh map[int]chan messageResponse
-	anonChans         map[int]*AnonymousChannel
-	inboundCancelsMu  sync.Mutex
-	inboundCancels    map[int]func(error) // cancel funcs for inbound requests
-	handlersMu        sync.Mutex          // protects handlers and handlersOnce
-	handlers          map[handlerName]any
-	handlersOnce      map[handlerName]any
-	dataMu            sync.Mutex
-	data              map[string]any
-	server            *Server // server associated with the Client
+	ClientChannel                    // the "main" client channel with no name
+	connReqMu        sync.Mutex      // protects ctx, Conn, requests, and anonChans
+	ctx              context.Context // cancelled when the connection is closed
+	ctxCancel        func(error)     // called when the connection is closed
+	conn             Conn            // WebSocket connection; set `nil` on close
+	requestID        int             // auto-incrementing request ID
+	outboundRequests map[int]outboundRequest
+	anonChans        map[int]*AnonymousChannel
+	inboundCancelsMu sync.Mutex
+	inboundCancels   map[int]func(error) // cancel funcs for inbound requests
+	handlersMu       sync.Mutex          // protects handlers and handlersOnce
+	handlers         map[handlerName]any
+	handlersOnce     map[handlerName]any
+	dataMu           sync.Mutex
+	data             map[string]any
+	server           *Server // server associated with the Client
 }
 
 // NewClient creates a new Client not associated with any Server. Register
@@ -60,12 +69,12 @@ func NewClient(conn Conn) *Client {
 	c := &Client{
 		// ClientChannel is set below
 		// ctx, ctxCancel, and conn are assigned in Bind method
-		requestResponseCh: make(map[int]chan messageResponse),
-		anonChans:         make(map[int]*AnonymousChannel),
-		inboundCancels:    make(map[int]func(error)),
-		handlers:          make(map[handlerName]any),
-		handlersOnce:      make(map[handlerName]any),
-		data:              make(map[string]any),
+		outboundRequests: make(map[int]outboundRequest),
+		anonChans:        make(map[int]*AnonymousChannel),
+		inboundCancels:   make(map[int]func(error)),
+		handlers:         make(map[handlerName]any),
+		handlersOnce:     make(map[handlerName]any),
+		data:             make(map[string]any),
 		// server is set only by Server.Accept
 	}
 	// Set channel reference back to client, so channel methods work properly
@@ -120,11 +129,11 @@ func (c *Client) Bind(conn Conn) {
 
 	// Abort any pending outbound requests; their responses will never arrive
 	// on the new connection.
-	for _, respCh := range c.requestResponseCh {
-		respCh <- messageResponse{nil, errRebound}
-		close(respCh)
+	for _, req := range c.outboundRequests {
+		req.respCh <- messageResponse{nil, errRebound}
+		close(req.respCh)
 	}
-	clear(c.requestResponseCh)
+	clear(c.outboundRequests)
 
 	// Create a context that is cancelled when the connection is closed.
 	// I know it is generally frowned upon to store the Context in a struct, but
@@ -194,11 +203,11 @@ func (c *Client) close(
 	c.ctxCancel(fmt.Errorf("client closed (status: %v)", status))
 	c.conn = nil
 	// Abort all pending outbound requests for this client.
-	for _, respCh := range c.requestResponseCh {
-		respCh <- messageResponse{nil, errClosed}
-		close(respCh)
+	for _, req := range c.outboundRequests {
+		req.respCh <- messageResponse{nil, errClosed}
+		close(req.respCh)
 	}
-	clear(c.requestResponseCh)
+	clear(c.outboundRequests)
 	anonChans := c.anonChans
 	c.anonChans = make(map[int]*AnonymousChannel)
 	c.connReqMu.Unlock()
@@ -268,7 +277,7 @@ func (c *Client) sendReject(
 }
 
 // sendCancel sends a cancellation signal for a request and removes it from
-// requestResponseCh.
+// outboundRequests.
 func (c *Client) sendCancel(
 	ctx context.Context,
 	requestID *int,
@@ -278,8 +287,8 @@ func (c *Client) sendCancel(
 		reason = errors.New("Request aborted")
 	}
 	c.connReqMu.Lock()
-	_, ok := c.requestResponseCh[*requestID]
-	delete(c.requestResponseCh, *requestID)
+	_, ok := c.outboundRequests[*requestID]
+	delete(c.outboundRequests, *requestID)
 	conn := c.conn
 	c.connReqMu.Unlock()
 	if !ok || conn == nil {
@@ -405,12 +414,12 @@ func (c *Client) sendRequest(
 	// Add channel to client's pending requests and get unique request ID
 	c.requestID++
 	requestID := c.requestID
-	if c.requestResponseCh[requestID] != nil {
+	if _, ok := c.outboundRequests[requestID]; ok {
 		// should never happen
 		c.connReqMu.Unlock()
 		return nil, fmt.Errorf("request ID %d already in use", requestID)
 	} else {
-		c.requestResponseCh[requestID] = respCh
+		c.outboundRequests[requestID] = outboundRequest{respCh: respCh, ctx: ctx}
 		c.connReqMu.Unlock()
 	}
 
@@ -434,7 +443,7 @@ func (c *Client) sendRequest(
 	err := conn.WriteMessage(ctx, msg)
 	if err != nil {
 		c.connReqMu.Lock()
-		delete(c.requestResponseCh, requestID)
+		delete(c.outboundRequests, requestID)
 		c.connReqMu.Unlock()
 		return nil, fmt.Errorf("sending request: %w", err)
 	}
@@ -613,19 +622,21 @@ func (c *Client) handleMessage(ctx context.Context, msg Message) error {
 	// was handled above so it is nil here)
 	if msg.AnonymousChannel != 0 {
 		c.connReqMu.Lock()
-		respCh, ok := c.requestResponseCh[*msg.RequestID]
+		req, ok := c.outboundRequests[*msg.RequestID]
+		var anon *AnonymousChannel
 		if ok {
-			delete(c.requestResponseCh, *msg.RequestID)
+			chanID := *msg.RequestID
+			anon = newAnonymousChannel(ctx, req.ctx, chanID, c)
+			anon.ready = true // requestor receives a ready channel
+			delete(c.outboundRequests, *msg.RequestID)
+			c.anonChans[chanID] = anon
 		}
-		chanID := *msg.RequestID
-		anon := newAnonymousChannel(ctx, chanID, c)
-		c.anonChans[chanID] = anon
 		c.connReqMu.Unlock()
-		if respCh == nil {
+		if !ok {
 			return nil // ignore message with invalid request ID
 		}
-		respCh <- messageResponse{anon, nil}
-		close(respCh)
+		req.respCh <- messageResponse{anon, nil}
+		close(req.respCh)
 		return nil
 	}
 
@@ -643,21 +654,21 @@ func (c *Client) handleMessage(ctx context.Context, msg Message) error {
 		return nil
 	}
 
-	// Get request handler
+	// Get outbound request handler
 	c.connReqMu.Lock()
-	respCh, ok := c.requestResponseCh[*msg.RequestID]
+	req, ok := c.outboundRequests[*msg.RequestID]
 	if ok {
-		delete(c.requestResponseCh, *msg.RequestID)
+		delete(c.outboundRequests, *msg.RequestID)
 	}
 	c.connReqMu.Unlock()
-	if respCh == nil {
+	if !ok {
 		return nil // ignore message with invalid request ID
 	}
 
 	// Process response
 	res, err := msg.Response()
-	respCh <- messageResponse{res, err}
-	close(respCh)
+	req.respCh <- messageResponse{res, err}
+	close(req.respCh)
 
 	return nil
 }
@@ -761,9 +772,9 @@ func (c *Client) handleEvent(
 		handlerCtx = context.WithValue(
 			handlerCtx, anonChannelKey{}, func() *AnonymousChannel {
 				if anonChan == nil {
-					// Anonymous channel uses connection context, not request
-					// context
-					anonChan = newAnonymousChannel(ctx, *msg.RequestID, c)
+					// Inbound anonymous channels are not tied to a request
+					// context, so pass context.Background() as reqCtx.
+					anonChan = newAnonymousChannel(ctx, context.Background(), *msg.RequestID, c)
 				}
 				return anonChan
 			},
@@ -812,6 +823,9 @@ func (c *Client) handleEvent(
 			c.anonChans[*msg.RequestID] = anonChan
 			c.connReqMu.Unlock()
 			sendErr = c.sendResolveAnon(ctx, msg.RequestID)
+			if sendErr == nil {
+				anonChan.ready = true
+			}
 		} else {
 			// Clean up the anonymous channel if one was created
 			if anonChan != nil {
