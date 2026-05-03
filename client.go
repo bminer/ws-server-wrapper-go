@@ -612,17 +612,17 @@ func (c *Client) handleMessage(ctx context.Context, msg Message) error {
 	// Anonymous channel creation response: {i, h} (no Arguments; CancelReason
 	// was handled above so it is nil here)
 	if msg.AnonymousChannel != 0 {
-		chanID := *msg.RequestID
 		c.connReqMu.Lock()
 		respCh, ok := c.requestResponseCh[*msg.RequestID]
 		if ok {
 			delete(c.requestResponseCh, *msg.RequestID)
 		}
+		chanID := *msg.RequestID
 		anon := newAnonymousChannel(ctx, chanID, c)
 		c.anonChans[chanID] = anon
 		c.connReqMu.Unlock()
 		if respCh == nil {
-			return nil
+			return nil // ignore message with invalid request ID
 		}
 		respCh <- messageResponse{anon, nil}
 		close(respCh)
@@ -761,6 +761,8 @@ func (c *Client) handleEvent(
 		handlerCtx = context.WithValue(
 			handlerCtx, anonChannelKey{}, func() *AnonymousChannel {
 				if anonChan == nil {
+					// Anonymous channel uses connection context, not request
+					// context
 					anonChan = newAnonymousChannel(ctx, *msg.RequestID, c)
 				}
 				return anonChan
@@ -768,23 +770,25 @@ func (c *Client) handleEvent(
 		)
 	}
 
+	// Launch event handler in its own goroutine
 	go func() {
 		defer close(msg.processed)
 		result, err := callHandler(handlerCtx, handler, msg.HandlerArguments())
+		// We are done running the handler, so cancel the handler context
 		if cancel != nil {
 			cancel(context.Canceled)
 		}
 
-		// For event messages (not requests), clean up any factory channel that
-		// was created but not returned, then return. inboundCancels is only
-		// populated for requests, so there is nothing to remove here.
+		// Silently ignore the response if it's not a request
 		if msg.RequestID == nil {
+			// Clean up the anonymous channel if one was created
 			if anonChan != nil {
 				anonChan.closeWithCause(context.Canceled)
 			}
 			return
 		}
 
+		// Clean up inbound cancellation
 		c.inboundCancelsMu.Lock()
 		delete(c.inboundCancels, *msg.RequestID)
 		c.inboundCancelsMu.Unlock()
@@ -796,27 +800,28 @@ func (c *Client) handleEvent(
 		// different channel with the same ID.
 		var sendErr error
 		if err != nil {
-			// Handler returned an error; clean up any factory channel created
+			// Clean up the anonymous channel if one was created
 			if anonChan != nil {
 				anonChan.closeWithCause(context.Canceled)
 			}
+			// Send error response
 			sendErr = c.sendReject(ctx, msg.RequestID, err)
-		} else if result == anonChan && anonChan != nil {
-			// Handler returned the factory anonymous channel; register and
-			// notify
+		} else if anonChan != nil && result == anonChan {
+			// Handler returned the anonymous channel; register and notify
 			c.connReqMu.Lock()
 			c.anonChans[*msg.RequestID] = anonChan
 			c.connReqMu.Unlock()
 			sendErr = c.sendResolveAnon(ctx, msg.RequestID)
 		} else {
-			// Handler returned a regular value (or nil / a different anon
-			// channel); close the factory channel if one was created
+			// Clean up the anonymous channel if one was created
 			if anonChan != nil {
 				anonChan.closeWithCause(context.Canceled)
 			}
+			// Send data response
 			sendErr = c.sendResolve(ctx, msg.RequestID, result)
 		}
 		if sendErr != nil {
+			// Emit error and close client
 			sendErr = fmt.Errorf("responding to request: %w", sendErr)
 			c.emitError(sendErr)
 			if c.server != nil {
