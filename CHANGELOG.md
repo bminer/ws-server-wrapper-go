@@ -9,7 +9,18 @@ Current ws-wrapper compatibility: **v4.1**.
 
 ## [Unreleased]
 
-- No unreleased library changes yet.
+### Added
+
+- Added `AnonymousChannel` type: a request handler can now return an `*AnonymousChannel` to open a bidirectional, request-scoped sub-channel over the same WebSocket connection.
+- Added `Channel(ctx)` helper to obtain the `*AnonymousChannel` for the current request handler context, creating it lazily on first call.
+- Added example demonstrating anonymous channel usage.
+
+### Changed
+
+- `ClientKey` context key has been removed. `ClientFromContext` still works as before; code that referenced `wrapper.ClientKey` directly should be updated to use `ClientFromContext` instead.
+- `Message` gained an `AnonymousChannel` field (`"h"` JSON key) for the anonymous channel protocol.
+- `Message.CancelCause` no longer requires a non-nil `RequestID`; it now also handles anonymous channel abort messages (`{h, x}`).
+- `Message.LogValue` updated to log anonymous-channel-specific fields (`anonCh`, `anonChCreated`) for the new message types.
 
 ## [1.6.0] - 2026-04-23
 
