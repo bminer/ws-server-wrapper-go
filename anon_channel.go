@@ -2,7 +2,6 @@ package wrapper
 
 import (
 	"context"
-	"fmt"
 	"strconv"
 )
 
@@ -93,16 +92,17 @@ func (ch *AnonymousChannel) Request(
 // context. It does NOT send an abort message to the remote end; use Abort for
 // that. Close is idempotent and safe to call multiple times.
 func (ch *AnonymousChannel) Close() error {
-	return ch.closeWithCause(context.Canceled)
+	ch.closeWithCause(context.Canceled)
+	return nil
 }
 
 // closeWithCause closes the anonymous channel with a specific cause. This is
 // used internally when the connection closes or when an abort is received from
 // the remote end; it does not send an abort message.
-func (ch *AnonymousChannel) closeWithCause(cause error) error {
+func (ch *AnonymousChannel) closeWithCause(cause error) {
 	c := ch.client
 	if c == nil {
-		return nil // already closed
+		return // already closed
 	}
 	ch.client = nil
 	c.handlersMu.Lock()
@@ -113,7 +113,6 @@ func (ch *AnonymousChannel) closeWithCause(cause error) error {
 	c.connReqMu.Lock()
 	delete(c.anonChans, ch.id)
 	c.connReqMu.Unlock()
-	return nil
 }
 
 // Abort sends an abort message to the remote end with the provided reason and
@@ -123,13 +122,7 @@ func (ch *AnonymousChannel) Abort(err error) error {
 	if c == nil {
 		return nil // already closed
 	}
-	if err == nil {
-		err = context.Canceled
-	}
-	if sendErr := c.sendAnonCancel(ch.ctx, ch.id, err); sendErr != nil {
-		return fmt.Errorf("sending cancellation: %w", sendErr)
-	}
-	return nil
+	return c.sendAnonCancel(ch.ctx, ch.id, err)
 }
 
 // Context returns a context that is cancelled when this anonymous channel is

@@ -289,8 +289,7 @@ func (c *Client) sendCancel(
 }
 
 // sendAnonCancel sends an anonymous channel abort message to the client and
-// closes the anonymous channel, mirroring how sendCancel removes an outbound
-// request from requestResponseCh.
+// closes the anonymous channel.
 func (c *Client) sendAnonCancel(ctx context.Context, chanID int, reason error) error {
 	if reason == nil {
 		reason = context.Canceled
@@ -299,23 +298,22 @@ func (c *Client) sendAnonCancel(ctx context.Context, chanID int, reason error) e
 	ch := c.anonChans[chanID]
 	conn := c.conn
 	c.connReqMu.Unlock()
+	if ch != nil {
+		// Defer closing channel; otherwise `ctx` can be cancelled when writing
+		// cancellation message
+		defer ch.closeWithCause(reason)
+	}
 	if conn == nil {
-		if ch != nil {
-			ch.closeWithCause(reason)
-		}
 		return errClosed
 	}
-	err := conn.WriteMessage(ctx, &Message{
+	return conn.WriteMessage(ctx, &Message{
 		AnonymousChannel: chanID,
-		ResponseJSError:  true,
+		// Write as JS error
+		ResponseJSError: true,
 		CancelReason: map[string]any{
 			"message": reason.Error(),
 		},
 	})
-	if ch != nil {
-		ch.closeWithCause(reason)
-	}
-	return err
 }
 
 // sendResolve sends a resolve / data response to a request
@@ -346,7 +344,7 @@ func (c *Client) sendResolveAnon(ctx context.Context, requestID *int) error {
 	}
 	return conn.WriteMessage(ctx, &Message{
 		RequestID:        requestID,
-		AnonymousChannel: 1,
+		AnonymousChannel: 1, // send truthy value
 	})
 }
 
