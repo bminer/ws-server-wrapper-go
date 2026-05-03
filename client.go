@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"sync"
 )
 
@@ -585,9 +586,7 @@ func (c *Client) handleMessage(ctx context.Context, msg Message) error {
 	// Get message event name if any
 	eventName := msg.EventName()
 	if eventName != "" {
-		return c.handleEvent(
-			ctx, msg, eventName, msg.Channel, msg.AnonymousChannel,
-		)
+		return c.handleEvent(ctx, msg, eventName)
 	}
 	// defer close(msg.processed) cannot go to the top of this function because
 	// handleEvent creates a goroutine that is responsible for closing
@@ -664,19 +663,13 @@ func (c *Client) handleMessage(ctx context.Context, msg Message) error {
 }
 
 // handleEvent handles an inbound event or request on any channel.
-// chanID is the string channel name for named channels, or "" for anonymous
-// channels (anonID is used for map lookups and abort messages in that case).
 func (c *Client) handleEvent(
-	ctx context.Context,
-	msg Message,
-	eventName string,
-	chanID string,
-	anonID int,
+	ctx context.Context, msg Message, eventName string,
 ) error {
 	var cancel context.CancelCauseFunc
 
 	// For anonymous channels, verify the channel exists; send abort if not.
-	if anonID != 0 {
+	if anonID := msg.AnonymousChannel; anonID != 0 {
 		c.connReqMu.Lock()
 		_, ok := c.anonChans[anonID]
 		c.connReqMu.Unlock()
@@ -691,11 +684,13 @@ func (c *Client) handleEvent(
 		}
 	}
 
-	// Look up handler (client-specific first). For anonymous channels chanID
-	// is "" so the Channel field is empty and AnonymousChannel holds the
-	// numeric ID.
+	// Look up handler (client-specific first). For anonymous channels
+	// msg.AnonymousChannel is a positive numeric ID, and the Channel field is
+	// empty.
 	handlerID := handlerName{
-		Channel: chanID, AnonymousChannel: anonID, Event: eventName,
+		Channel:          msg.Channel,
+		AnonymousChannel: msg.AnonymousChannel,
+		Event:            eventName,
 	}
 	c.handlersMu.Lock()
 	handler, ok := c.handlersOnce[handlerID]
@@ -706,13 +701,12 @@ func (c *Client) handleEvent(
 	}
 	c.handlersMu.Unlock()
 
-	// For regular channels, get handlerCtxFunc and fall back to server
-	// handlers.
+	// Get handlerCtxFunc and try to use server handlers for regular channels.
 	var handlerCtxFunc HandlerContextFunc
 	if c.server != nil {
 		c.server.handlersMu.Lock()
 		handlerCtxFunc = c.server.handlerCtxFunc
-		if anonID == 0 && handler == nil {
+		if msg.AnonymousChannel == 0 && handler == nil {
 			handler, ok = c.server.handlersOnce[handlerID]
 			if ok {
 				delete(c.server.handlersOnce, handlerID)
@@ -727,17 +721,18 @@ func (c *Client) handleEvent(
 	if handler == nil {
 		defer close(msg.processed)
 		var err error
-		if anonID != 0 {
+		if msg.AnonymousChannel != 0 {
 			err = fmt.Errorf(
 				"no event listener for '%s' on anonymous channel %d",
-				eventName, anonID,
+				eventName, msg.AnonymousChannel,
 			)
-		} else if chanID == "" {
-			// chanID is "" for the main (unnamed) channel
+		} else if msg.Channel == "" {
+			// msg.Channel is "" for the main (unnamed) channel
 			err = fmt.Errorf("no event listener for '%s'", eventName)
 		} else {
 			err = fmt.Errorf(
-				"no event listener for '%s' on channel '%s'", eventName, chanID,
+				"no event listener for '%s' on channel '%s'",
+				eventName, msg.Channel,
 			)
 		}
 		if msg.RequestID != nil {
@@ -749,7 +744,11 @@ func (c *Client) handleEvent(
 	// Wrap context for handler execution
 	handlerCtx := ctx
 	if handlerCtxFunc != nil {
-		handlerCtx = handlerCtxFunc(ctx, chanID, eventName)
+		handlerCtxChanName := msg.Channel
+		if msg.AnonymousChannel != 0 {
+			handlerCtxChanName = strconv.Itoa(msg.AnonymousChannel)
+		}
+		handlerCtx = handlerCtxFunc(ctx, handlerCtxChanName, eventName)
 	}
 	// For inbound requests, create a cancellable context and inject the
 	// anonymous channel factory so handlers can call Channel(ctx).
