@@ -596,9 +596,9 @@ func (c *Client) handleMessage(ctx context.Context, msg Message) error {
 	// Inbound anonymous channel abort: {h, x} (no RequestID needed)
 	if msg.AnonymousChannel != 0 && msg.CancelReason != nil {
 		c.connReqMu.Lock()
-		ch, ok := c.anonChans[msg.AnonymousChannel]
+		ch := c.anonChans[msg.AnonymousChannel]
 		c.connReqMu.Unlock()
-		if ok {
+		if ch != nil {
 			ch.closeWithCause(msg.CancelCause())
 		}
 		return nil
@@ -666,8 +666,6 @@ func (c *Client) handleMessage(ctx context.Context, msg Message) error {
 func (c *Client) handleEvent(
 	ctx context.Context, msg Message, eventName string,
 ) error {
-	var cancel context.CancelCauseFunc
-
 	// For anonymous channels, verify the channel exists; send abort if not.
 	if anonID := msg.AnonymousChannel; anonID != 0 {
 		c.connReqMu.Lock()
@@ -750,21 +748,20 @@ func (c *Client) handleEvent(
 		}
 		handlerCtx = handlerCtxFunc(ctx, handlerCtxChanName, eventName)
 	}
-	// For inbound requests, create a cancellable context and inject the
-	// anonymous channel factory so handlers can call Channel(ctx).
+	// For inbound requests, create a request-specific cancellable context and
+	// inject the anonymous channel factory, so handlers can call Channel(ctx).
+	var cancel context.CancelCauseFunc
 	var anonChan *AnonymousChannel
-	var newChanID int
 	if msg.RequestID != nil {
 		handlerCtx, cancel = context.WithCancelCause(handlerCtx)
 		c.inboundCancelsMu.Lock()
 		c.inboundCancels[*msg.RequestID] = cancel
 		c.inboundCancelsMu.Unlock()
 
-		newChanID = *msg.RequestID
 		handlerCtx = context.WithValue(
 			handlerCtx, anonChannelKey{}, func() *AnonymousChannel {
 				if anonChan == nil {
-					anonChan = newAnonymousChannel(ctx, newChanID, c)
+					anonChan = newAnonymousChannel(ctx, *msg.RequestID, c)
 				}
 				return anonChan
 			},
@@ -808,7 +805,7 @@ func (c *Client) handleEvent(
 			// Handler returned the factory anonymous channel; register and
 			// notify
 			c.connReqMu.Lock()
-			c.anonChans[newChanID] = anonChan
+			c.anonChans[*msg.RequestID] = anonChan
 			c.connReqMu.Unlock()
 			sendErr = c.sendResolveAnon(ctx, msg.RequestID)
 		} else {
