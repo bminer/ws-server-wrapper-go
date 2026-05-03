@@ -167,20 +167,36 @@ func (m Message) LogValue() slog.Value {
 		if m.RequestID != nil {
 			attrs = append(attrs, slog.Int("reqID", *m.RequestID))
 		}
+	} else if m.AnonymousChannel != 0 && m.CancelReason != nil {
+		// Anonymous channel abort: {h, x}
+		attrs = []slog.Attr{
+			slog.Int("anonCh", m.AnonymousChannel),
+			slog.Any("cancelReason", m.CancelReason),
+			slog.Bool("jsError", bool(m.ResponseJSError)),
+		}
 	} else if m.RequestID != nil {
-		if m.CancelReason != nil {
+		if m.AnonymousChannel != 0 {
+			// Anonymous channel creation: {i, h} (channel ID == request ID)
+			attrs = []slog.Attr{
+				slog.Int("reqID", *m.RequestID),
+				slog.Bool("anonChCreated", true),
+			}
+		} else if m.CancelReason != nil {
+			// Request cancellation: {i, x}
 			attrs = []slog.Attr{
 				slog.Int("reqID", *m.RequestID),
 				slog.Any("cancelReason", m.CancelReason),
 				slog.Bool("jsError", bool(m.ResponseJSError)),
 			}
 		} else if m.ResponseError != nil {
+			// Response rejection: {i, e}
 			attrs = []slog.Attr{
 				slog.Int("reqID", *m.RequestID),
 				slog.Any("error", m.ResponseError),
 				slog.Bool("jsError", bool(m.ResponseJSError)),
 			}
 		} else {
+			// Response resolution: {i, d}
 			attrs = []slog.Attr{
 				slog.Int("reqID", *m.RequestID),
 				slog.Any("data", m.ResponseData),
