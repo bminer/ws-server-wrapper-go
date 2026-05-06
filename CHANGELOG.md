@@ -9,6 +9,8 @@ Current ws-wrapper compatibility: **v4.3**.
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-05-06
+
 ### Added
 
 - Added `AnonymousChannel` type: a request handler can now return an `*AnonymousChannel` to open a bidirectional, request-scoped sub-channel over the same WebSocket connection.
@@ -117,7 +119,8 @@ Current ws-wrapper compatibility: **v4.3**.
 - `coder/websocket` adapter module.
 - Example echo app.
 
-[unreleased]: https://github.com/bminer/ws-server-wrapper-go/compare/v1.6.0...HEAD
+[unreleased]: https://github.com/bminer/ws-server-wrapper-go/compare/v1.7.0...HEAD
+[1.7.0]: https://github.com/bminer/ws-server-wrapper-go/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/bminer/ws-server-wrapper-go/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/bminer/ws-server-wrapper-go/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/bminer/ws-server-wrapper-go/compare/v1.3.0...v1.4.0
