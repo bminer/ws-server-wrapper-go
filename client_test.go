@@ -284,7 +284,10 @@ func TestSendCancel_DefaultReason(t *testing.T) {
 
 	reqID := 42
 	client.connReqMu.Lock()
-	client.requestResponseCh[reqID] = make(chan messageResponse, 1)
+	client.outboundRequests[reqID] = outboundRequest{
+		respCh: make(chan messageResponse, 1),
+		ctx:    context.Background(),
+	}
 	client.connReqMu.Unlock()
 	if err := client.sendCancel(context.Background(), &reqID, nil); err != nil {
 		t.Fatalf("sendCancel returned error: %v", err)

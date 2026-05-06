@@ -167,10 +167,11 @@ func TestMessageCancelCause(t *testing.T) {
 	reqID := 1
 
 	t.Run("missing request ID", func(t *testing.T) {
+		// CancelCause works for anonymous-channel aborts too (no RequestID).
 		msg := Message{CancelReason: "user cancelled"}
 		err := msg.CancelCause()
-		if err == nil || err.Error() != "message is not a cancellation" {
-			t.Errorf("expected 'message is not a cancellation', got %v", err)
+		if err == nil || err.Error() != "user cancelled" {
+			t.Errorf("expected 'user cancelled', got %v", err)
 		}
 	})
 
