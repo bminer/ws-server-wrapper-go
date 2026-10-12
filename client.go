@@ -151,7 +151,9 @@ func (c *Client) Bind(conn Conn) {
 	}
 	c.handlersMu.Lock()
 	for _, ch := range prevAnonChans {
+		ch.mu.Lock()
 		ch.client = nil
+		ch.mu.Unlock()
 		closeHandlersForChannel("", ch.id, c.handlers, c.handlersOnce)
 		ch.ctxCancel(errRebound)
 	}
@@ -215,7 +217,9 @@ func (c *Client) close(
 	// Close all anonymous channels
 	c.handlersMu.Lock()
 	for _, ch := range anonChans {
+		ch.mu.Lock()
 		ch.client = nil
+		ch.mu.Unlock()
 		closeHandlersForChannel("", ch.id, c.handlers, c.handlersOnce)
 		ch.ctxCancel(errClosed)
 	}
@@ -830,10 +834,10 @@ func (c *Client) handleEvent(
 			c.connReqMu.Lock()
 			c.anonChans[*msg.RequestID] = anonChan
 			c.connReqMu.Unlock()
+			anonChan.mu.Lock()
 			sendErr = c.sendResolveAnon(ctx, msg.RequestID)
-			if sendErr == nil {
-				anonChan.ready = true
-			}
+			anonChan.ready = sendErr == nil
+			anonChan.mu.Unlock()
 		} else {
 			// Clean up the anonymous channel if one was created
 			if anonChan != nil {

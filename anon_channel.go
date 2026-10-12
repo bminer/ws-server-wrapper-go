@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strconv"
+	"sync"
 )
 
 // errNotReady is returned by Emit and Request when called before the anonymous
@@ -20,10 +21,11 @@ var errNotReady = errors.New("anonymous channel not yet ready")
 // including inside the handler before the channel is returned.
 type AnonymousChannel struct {
 	id        int
+	mu        sync.Mutex // protects client and ready
 	client    *Client
+	ready     bool // set once the creation response sent to the requestor
 	ctx       context.Context
 	ctxCancel context.CancelCauseFunc
-	ready     bool // true once the creation response has been sent to the requestor
 }
 
 // newAnonymousChannel creates an AnonymousChannel with the given ID and client.
@@ -48,10 +50,7 @@ func newAnonymousChannel(
 		_ = anon.Abort(context.Cause(reqCtx))
 	})
 	anon.ctxCancel = func(cause error) {
-		if stopReqCtxWatch != nil {
-			stopReqCtxWatch()
-			stopReqCtxWatch = nil
-		}
+		stopReqCtxWatch()
 		ctxCancel(cause)
 	}
 	return anon
@@ -60,7 +59,9 @@ func newAnonymousChannel(
 // On adds an event handler for the specified event on this anonymous channel.
 // See ClientChannel.On for handler signature details.
 func (ch *AnonymousChannel) On(eventName string, handler any) *AnonymousChannel {
+	ch.mu.Lock()
 	c := ch.client
+	ch.mu.Unlock()
 	if c != nil {
 		key := handlerName{AnonymousChannel: ch.id, Event: eventName}
 		registerClientHandler(c, key, handler, false)
@@ -71,7 +72,9 @@ func (ch *AnonymousChannel) On(eventName string, handler any) *AnonymousChannel 
 // Once adds a one-time event handler for the specified event on this anonymous
 // channel. See ClientChannel.On for handler signature details.
 func (ch *AnonymousChannel) Once(eventName string, handler any) *AnonymousChannel {
+	ch.mu.Lock()
 	c := ch.client
+	ch.mu.Unlock()
 	if c != nil {
 		key := handlerName{AnonymousChannel: ch.id, Event: eventName}
 		registerClientHandler(c, key, handler, true)
@@ -84,10 +87,13 @@ func (ch *AnonymousChannel) Once(eventName string, handler any) *AnonymousChanne
 // the event name string. Returns an error if the channel is not yet ready,
 // is closed, or if the message could not be sent.
 func (ch *AnonymousChannel) Emit(ctx context.Context, arguments ...any) error {
-	if !ch.ready {
+	ch.mu.Lock()
+	ready := ch.ready
+	c := ch.client
+	ch.mu.Unlock()
+	if !ready {
 		return errNotReady
 	}
-	c := ch.client
 	if c == nil {
 		return ChannelClosedError{Channel: strconv.Itoa(ch.id)}
 	}
@@ -105,10 +111,13 @@ func (ch *AnonymousChannel) Emit(ctx context.Context, arguments ...any) error {
 func (ch *AnonymousChannel) Request(
 	ctx context.Context, arguments ...any,
 ) (any, error) {
-	if !ch.ready {
+	ch.mu.Lock()
+	ready := ch.ready
+	c := ch.client
+	ch.mu.Unlock()
+	if !ready {
 		return nil, errNotReady
 	}
-	c := ch.client
 	if c == nil {
 		return nil, ChannelClosedError{Channel: strconv.Itoa(ch.id)}
 	}
@@ -132,11 +141,14 @@ func (ch *AnonymousChannel) Close() error {
 // used internally when the connection closes or when an abort is received from
 // the remote end; it does not send an abort message.
 func (ch *AnonymousChannel) closeWithCause(cause error) {
+	ch.mu.Lock()
 	c := ch.client
 	if c == nil {
+		ch.mu.Unlock()
 		return // already closed
 	}
 	ch.client = nil
+	ch.mu.Unlock()
 	c.handlersMu.Lock()
 	closeHandlersForChannel("", ch.id, c.handlers, c.handlersOnce)
 	c.handlersMu.Unlock()
@@ -148,9 +160,12 @@ func (ch *AnonymousChannel) closeWithCause(cause error) {
 }
 
 // Abort sends an abort message to the remote end with the provided reason and
-// closes this anonymous channel. If err is nil, it defaults to context.Canceled.
+// closes this anonymous channel. If err is nil, it defaults to
+// context.Canceled.
 func (ch *AnonymousChannel) Abort(err error) error {
+	ch.mu.Lock()
 	c := ch.client
+	ch.mu.Unlock()
 	if c == nil {
 		return nil // already closed
 	}

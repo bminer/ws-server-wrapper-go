@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 )
@@ -641,6 +642,88 @@ func TestAnonChannelEmitSendsCorrectMessage(t *testing.T) {
 }
 
 // ── Connection close cleans up anonymous channels ────────────────────────────
+
+// TestAnonChannelConcurrentEmitAndClose verifies that an anonymous channel can
+// be used from one goroutine while the client connection and the channel itself
+// are closed from others. Run with -race: Emit and On read ch.client while
+// Client.close and AnonymousChannel.Close both clear it.
+func TestAnonChannelConcurrentEmitAndClose(t *testing.T) {
+	server := NewServer()
+	conn := newMockConn()
+
+	var capturedCh *AnonymousChannel
+	var client *Client
+	ready := make(chan struct{})
+	server.On("stream", func(ctx context.Context) (*AnonymousChannel, error) {
+		capturedCh = Channel(ctx)
+		client = ClientFromContext(ctx)
+		close(ready)
+		return capturedCh, nil
+	})
+
+	if err := server.Accept(conn); err != nil {
+		t.Fatal(err)
+	}
+
+	reqID := 1
+	conn.send(Message{
+		RequestID: &reqID,
+		Arguments: []json.RawMessage{[]byte(`"stream"`)},
+	})
+	conn.waitWritten(t, time.Second) // consume creation response
+	<-ready
+
+	// Keep using the channel until told to stop. Once the first Emit gets past
+	// the ready check, signal that the channel is in use.
+	inUse := make(chan struct{})
+	stop := make(chan struct{})
+	usageDone := make(chan struct{})
+	go func() {
+		defer close(usageDone)
+		signaled := false
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			err := capturedCh.Emit(context.Background(), "tick")
+			capturedCh.On("noop", func() error { return nil })
+			if !signaled && !errors.Is(err, errNotReady) {
+				signaled = true
+				close(inUse)
+			}
+		}
+	}()
+
+	select {
+	case <-inUse:
+	case <-time.After(time.Second):
+		t.Fatal("channel never became ready")
+	}
+
+	// Close the connection and the channel at the same time.
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		_ = client.Close(StatusNormalClosure, "done")
+	}()
+	go func() {
+		defer wg.Done()
+		_ = capturedCh.Close()
+	}()
+	wg.Wait()
+
+	close(stop)
+	<-usageDone
+
+	err := capturedCh.Emit(context.Background(), "tick")
+	var closedErr ChannelClosedError
+	if !errors.As(err, &closedErr) {
+		t.Fatalf("expected ChannelClosedError after close, got %T: %v", err, err)
+	}
+}
 
 // TestConnectionCloseAbortsAnonChannels verifies that closing the connection
 // cancels all open anonymous channel contexts.
