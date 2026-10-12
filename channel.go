@@ -265,12 +265,24 @@ func (c *ServerChannel) Emit(ctx context.Context, arguments ...any) error {
 	if c.name == "" && IsReservedEvent(eventName) {
 		return fmt.Errorf("cannot emit reserved event '%s' on main channel", eventName)
 	}
-	c.server.clientsMu.Lock()
-	defer c.server.clientsMu.Unlock()
 
-	var errs []error
+	// Make a copy of connected clients while we have the lock
+	c.server.clientsMu.Lock()
+	clientsCopy := make([]*Client, len(c.server.clients))
+	i := 0
 	for client := range c.server.clients {
-		if err := client.sendEvent(ctx, c.name, 0, arguments...); err != nil {
+		clientsCopy[i] = client
+		i++
+	}
+	c.server.clientsMu.Unlock()
+
+	// Emit the event for every connected client
+	// TODO: Perhaps only JSON encode the message once?
+	var errs []error
+	for _, client := range clientsCopy {
+		err := client.sendEvent(ctx, c.name, 0, arguments...)
+		// Ignore if client was closed since copy was made
+		if err != nil && !errors.Is(err, errClosed) {
 			errs = append(errs, ClientError{Client: client, error: err})
 		}
 	}
