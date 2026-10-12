@@ -2,13 +2,16 @@ package wrapper
 
 import "fmt"
 
-// ClientError is an error for a specific client
+// ClientError is an error associated with a specific client. It is returned
+// (joined via [errors.Join]) by [ServerChannel.Emit] when sending to one or
+// more clients fails. Use [errors.As] to extract individual ClientError values
+// from a joined error.
 type ClientError struct {
 	Client *Client
 	error  error
 }
 
-// Error returns the error message as a string
+// Error returns the error message as a string.
 func (ce ClientError) Error() string {
 	return ce.error.Error()
 }

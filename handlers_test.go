@@ -340,12 +340,12 @@ func TestServerChannelCloseMarksChannelClosed(t *testing.T) {
 	}
 	ch.On("a", func() error { return nil })
 	ch.Once("a", func() error { return nil })
-	if errs := ch.Emit(context.Background(), "a"); len(errs) == 0 {
+	if err := ch.Emit(context.Background(), "a"); err == nil {
 		t.Fatal("expected closed-channel error from Emit")
 	} else {
 		var cerr ChannelClosedError
-		if !errors.As(errs[0], &cerr) {
-			t.Fatalf("expected ChannelClosedError, got %T", errs[0])
+		if !errors.As(err, &cerr) {
+			t.Fatalf("expected ChannelClosedError, got %T", err)
 		}
 	}
 }

@@ -243,9 +243,11 @@ func (c *Client) Set(key string, value any) {
 	c.data[key] = value
 }
 
-// Of returns a channel for the given name
-func (c *Client) Of(name string) ClientChannel {
-	return ClientChannel{
+// Of returns a named channel scoped to this client. Handlers registered on
+// the returned channel only fire for events on that named channel from this
+// specific client. See [Server.Of] for the server-wide equivalent.
+func (c *Client) Of(name string) *ClientChannel {
+	return &ClientChannel{
 		name:   name,
 		client: c,
 	}

@@ -2,6 +2,7 @@ package wrapper
 
 import (
 	"context"
+	"errors"
 	"fmt"
 )
 
@@ -82,7 +83,7 @@ type ClientChannel struct {
 //
 // If On is called multiple times for the same event name, the last handler
 // will be used. If handler is nil, the event handler is removed.
-func (ch ClientChannel) On(eventName string, handler any) ClientChannel {
+func (ch *ClientChannel) On(eventName string, handler any) *ClientChannel {
 	c := ch.client
 	if c != nil {
 		key := handlerName{Channel: ch.name, Event: eventName}
@@ -94,7 +95,7 @@ func (ch ClientChannel) On(eventName string, handler any) ClientChannel {
 // Once adds a one-time event handler for the specified event to the channel.
 // See ClientChannel.On for more information about how event handlers are
 // called.
-func (ch ClientChannel) Once(eventName string, handler any) ClientChannel {
+func (ch *ClientChannel) Once(eventName string, handler any) *ClientChannel {
 	c := ch.client
 	if c != nil {
 		key := handlerName{Channel: ch.name, Event: eventName}
@@ -120,7 +121,7 @@ func checkEventName(arguments []any) (string, error) {
 // argument must be the event name that tells the remote end which event handler
 // to call. Returns an error if there was an error sending the message to the
 // client.
-func (ch ClientChannel) Emit(ctx context.Context, arguments ...any) error {
+func (ch *ClientChannel) Emit(ctx context.Context, arguments ...any) error {
 	c := ch.client
 	if c == nil {
 		return ChannelClosedError{Channel: ch.name}
@@ -140,7 +141,7 @@ func (ch ClientChannel) Emit(ctx context.Context, arguments ...any) error {
 // Request sends a request to the client and returns the response. The passed
 // context can be used to cancel the request. The first argument is the event
 // name that tells the remote end which request handler to call.
-func (ch ClientChannel) Request(
+func (ch *ClientChannel) Request(
 	ctx context.Context, arguments ...any,
 ) (response any, err error) {
 	c := ch.client
@@ -159,8 +160,9 @@ func (ch ClientChannel) Request(
 	return c.sendRequest(ctx, ch.name, 0, arguments...)
 }
 
-// Name returns the name of the channel
-func (ch ClientChannel) Name() string {
+// Name returns the name of this channel. Returns an empty string for the main
+// (unnamed) channel.
+func (ch *ClientChannel) Name() string {
 	return ch.name
 }
 
@@ -190,7 +192,7 @@ type ServerChannel struct {
 
 // On adds an event handler for the specified event to the channel. See
 // ClientChannel.On for more information about how event handlers are called.
-func (c ServerChannel) On(eventName string, handler any) ServerChannel {
+func (c *ServerChannel) On(eventName string, handler any) *ServerChannel {
 	if c.server == nil {
 		return c // channel closed; do nothing
 	}
@@ -211,7 +213,7 @@ func (c ServerChannel) On(eventName string, handler any) ServerChannel {
 // Once adds a one-time event handler for the specified event to the channel.
 // See ClientChannel.On for more information about how event handlers are
 // called.
-func (c ServerChannel) Once(eventName string, handler any) ServerChannel {
+func (c *ServerChannel) Once(eventName string, handler any) *ServerChannel {
 	if c.server == nil {
 		return c // channel closed; do nothing
 	}
@@ -244,48 +246,36 @@ func (c *ServerChannel) Close() error {
 	return nil
 }
 
-// Emit sends an event to all clients on the specified channel. The passed
-// context can be used to cancel writing the message to the client. The second
-// argument is the event name that tells the remote end which event handler to
-// call. Returns a slice of ClientErrors that contains an entry if an error
-// occurred when sending the message to a specific client.
-func (c ServerChannel) Emit(
-	ctx context.Context, arguments ...any,
-) (errs []ClientError) {
+// Emit sends an event to all connected clients on the specified channel. The
+// passed context can be used to cancel writing messages. The next argument must
+// be the event name. If sending fails for one or more clients, all errors are
+// joined into a single error via [errors.Join]; each individual error is a
+// [ClientError] and can be inspected with [errors.As].
+func (c *ServerChannel) Emit(ctx context.Context, arguments ...any) error {
 	if c.server == nil {
-		errs = append(errs, ClientError{
-			Client: nil,
-			error:  ChannelClosedError{Channel: c.name},
-		})
-		return
+		return ChannelClosedError{Channel: c.name}
 	}
 	eventName, err := checkEventName(arguments)
 	if err != nil {
-		errs = append(errs, ClientError{Client: nil, error: err})
-		return
+		return err
 	}
 	if c.name == "" && IsReservedEvent(eventName) {
-		errs = append(errs, ClientError{Client: nil, error: fmt.Errorf(
-			"cannot emit reserved event '%s' on main channel", eventName,
-		)})
-		return
+		return fmt.Errorf("cannot emit reserved event '%s' on main channel", eventName)
 	}
 	c.server.clientsMu.Lock()
 	defer c.server.clientsMu.Unlock()
 
+	var errs []error
 	for client := range c.server.clients {
-		err := client.sendEvent(ctx, c.name, 0, arguments...)
-		if err != nil {
-			errs = append(errs, ClientError{
-				Client: client,
-				error:  err,
-			})
+		if err := client.sendEvent(ctx, c.name, 0, arguments...); err != nil {
+			errs = append(errs, ClientError{Client: client, error: err})
 		}
 	}
-	return
+	return errors.Join(errs...)
 }
 
-// Name returns the name of the channel
-func (c ServerChannel) Name() string {
+// Name returns the name of this channel. Returns an empty string for the main
+// (unnamed) channel.
+func (c *ServerChannel) Name() string {
 	return c.name
 }

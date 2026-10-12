@@ -79,9 +79,12 @@ func (s *Server) Close() error {
 	return clientErr
 }
 
-// Of returns a channel for the given name
-func (s *Server) Of(name string) ServerChannel {
-	return ServerChannel{
+// Of returns a named channel that scopes events and requests to name. Handlers
+// registered on the returned channel only fire for events received on that
+// named channel, and events emitted on it are sent only to the named channel
+// on the remote end.
+func (s *Server) Of(name string) *ServerChannel {
+	return &ServerChannel{
 		name:   name,
 		server: s,
 	}
