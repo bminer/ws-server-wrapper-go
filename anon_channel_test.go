@@ -1112,3 +1112,117 @@ func TestOutboundRequestConnectionCloseBeforeCtxCancelIsHarmless(t *testing.T) {
 	case <-time.After(50 * time.Millisecond):
 	}
 }
+
+// TestAnonChannelRequest verifies a request/response round trip sent from the
+// server over an anonymous channel, plus Request's error cases.
+func TestAnonChannelRequest(t *testing.T) {
+	server := NewServer()
+	conn := newMockConn()
+
+	var capturedCh *AnonymousChannel
+	ready := make(chan struct{})
+	server.On("stream", func(ctx context.Context) (*AnonymousChannel, error) {
+		capturedCh = Channel(ctx)
+		close(ready)
+		return capturedCh, nil
+	})
+	if err := server.Accept(conn); err != nil {
+		t.Fatal(err)
+	}
+
+	reqID := 1
+	conn.send(Message{
+		RequestID: &reqID,
+		Arguments: []json.RawMessage{[]byte(`"stream"`)},
+	})
+	conn.waitWritten(t, time.Second) // consume creation response
+	<-ready
+
+	if _, err := capturedCh.Request(context.Background()); err == nil {
+		t.Error("expected error when event name is missing")
+	}
+
+	type result struct {
+		data any
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		data, err := capturedCh.Request(context.Background(), "ask", 7)
+		done <- result{data, err}
+	}()
+
+	req := conn.waitWritten(t, time.Second)
+	if req.AnonymousChannel != reqID || req.EventName() != "ask" || req.RequestID == nil {
+		t.Fatalf("expected 'ask' request on anonymous channel %d, got %+v", reqID, req)
+	}
+	conn.send(Message{RequestID: req.RequestID, ResponseData: "answer"})
+
+	select {
+	case res := <-done:
+		if res.err != nil || res.data != "answer" {
+			t.Fatalf("expected 'answer', got %v (err %v)", res.data, res.err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("request did not complete")
+	}
+
+	capturedCh.Close()
+	_, err := capturedCh.Request(context.Background(), "ask")
+	var closedErr ChannelClosedError
+	if !errors.As(err, &closedErr) {
+		t.Fatalf("expected ChannelClosedError after Close, got %T: %v", err, err)
+	}
+
+	conn.Close(StatusNormalClosure, "done")
+}
+
+// TestAnonChannelOnce verifies that a Once handler on an anonymous channel
+// fires only for the first matching event.
+func TestAnonChannelOnce(t *testing.T) {
+	server := NewServer()
+	conn := newMockConn()
+
+	calls := make(chan int, 2)
+	server.On("stream", func(ctx context.Context) (*AnonymousChannel, error) {
+		ch := Channel(ctx)
+		ch.Once("tick", func(n int) error {
+			calls <- n
+			return nil
+		})
+		return ch, nil
+	})
+	if err := server.Accept(conn); err != nil {
+		t.Fatal(err)
+	}
+
+	reqID := 1
+	conn.send(Message{
+		RequestID: &reqID,
+		Arguments: []json.RawMessage{[]byte(`"stream"`)},
+	})
+	conn.waitWritten(t, time.Second) // consume creation response
+
+	for _, n := range []string{"1", "2"} {
+		conn.send(Message{
+			AnonymousChannel: reqID,
+			Arguments:        []json.RawMessage{[]byte(`"tick"`), []byte(n)},
+		})
+	}
+
+	select {
+	case n := <-calls:
+		if n != 1 {
+			t.Fatalf("expected first event (1), got %d", n)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Once handler not called")
+	}
+	select {
+	case n := <-calls:
+		t.Fatalf("Once handler fired a second time with %d", n)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	conn.Close(StatusNormalClosure, "done")
+}

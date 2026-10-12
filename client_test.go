@@ -603,6 +603,14 @@ func TestClientFromContext(t *testing.T) {
 	conn.Close(StatusNormalClosure, "done")
 }
 
+// TestClientFromContextMissing verifies that ClientFromContext returns nil for
+// a context that does not carry a client.
+func TestClientFromContextMissing(t *testing.T) {
+	if c := ClientFromContext(context.Background()); c != nil {
+		t.Fatalf("expected nil, got %v", c)
+	}
+}
+
 // TestSetHandlerContext verifies that a HandlerContextFunc set via
 // SetHandlerContext is applied before each handler invocation.
 func TestSetHandlerContext(t *testing.T) {
@@ -1077,4 +1085,140 @@ func TestBind_UserClosed(t *testing.T) {
 			t.Fatal("close handler did not fire")
 		}
 	})
+}
+
+// readErrConn is a mockConn whose reads always fail with err.
+type readErrConn struct {
+	*mockConn
+	err error
+}
+
+func (r *readErrConn) ReadMessage(ctx context.Context, msg *Message) error {
+	return r.err
+}
+
+// TestReadErrorFiresErrorAndCloseHandlers verifies that a read failure fires
+// the client and server "error" handlers, then closes the connection with
+// StatusInternalError. It also covers the legacy three-argument close handler
+// form on both the client and the server.
+func TestReadErrorFiresErrorAndCloseHandlers(t *testing.T) {
+	server := NewServer()
+	readErr := errors.New("read failed")
+	conn := &readErrConn{mockConn: newMockConn(), err: readErr}
+
+	clientErr := make(chan error, 1)
+	serverErr := make(chan error, 1)
+	clientClose := make(chan StatusCode, 1)
+	serverClose := make(chan StatusCode, 1)
+
+	server.On("error", func(c *Client, err error) { serverErr <- err })
+	server.On("disconnect", func(c *Client, status StatusCode, reason string) {
+		serverClose <- status
+	})
+	server.On("open", func(c *Client) {
+		c.On("error", func(c *Client, err error) { clientErr <- err })
+		c.On("close", func(c *Client, status StatusCode, reason string) {
+			clientClose <- status
+		})
+	})
+
+	if err := server.Accept(conn); err != nil {
+		t.Fatal(err)
+	}
+
+	for name, ch := range map[string]chan error{"client": clientErr, "server": serverErr} {
+		select {
+		case err := <-ch:
+			if !errors.Is(err, readErr) {
+				t.Fatalf("%s error handler: expected read error, got %v", name, err)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("%s error handler did not fire", name)
+		}
+	}
+	for name, ch := range map[string]chan StatusCode{"client": clientClose, "server": serverClose} {
+		select {
+		case status := <-ch:
+			if status != StatusInternalError {
+				t.Fatalf("%s close handler: expected StatusInternalError, got %v", name, status)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("%s close handler did not fire", name)
+		}
+	}
+}
+
+// TestMessageHandler verifies that the "message" handler receives every
+// inbound message and that Message.Processed is closed once the event handler
+// has finished.
+func TestMessageHandler(t *testing.T) {
+	client := NewClient(nil)
+	conn := newMockConn()
+
+	received := make(chan Message, 1)
+	handled := make(chan struct{})
+	client.On("message", func(c *Client, msg Message) { received <- msg })
+	client.On("ping", func() error {
+		close(handled)
+		return nil
+	})
+	client.Bind(conn)
+
+	conn.send(Message{Arguments: []json.RawMessage{[]byte(`"ping"`)}})
+
+	var msg Message
+	select {
+	case msg = <-received:
+	case <-time.After(time.Second):
+		t.Fatal("message handler did not fire")
+	}
+	if msg.EventName() != "ping" {
+		t.Fatalf("expected 'ping' message, got %+v", msg)
+	}
+	select {
+	case <-msg.Processed():
+	case <-time.After(time.Second):
+		t.Fatal("Processed channel was not closed")
+	}
+	select {
+	case <-handled:
+	default:
+		t.Fatal("Processed closed before the event handler ran")
+	}
+
+	conn.Close(StatusNormalClosure, "done")
+}
+
+// TestIgnoredMessage verifies that a message with "ws-wrapper": false is not
+// dispatched to any event handler.
+func TestIgnoredMessage(t *testing.T) {
+	client := NewClient(nil)
+	conn := newMockConn()
+
+	called := make(chan string, 2)
+	client.On("ping", func(s string) error {
+		called <- s
+		return nil
+	})
+	client.Bind(conn)
+
+	ignore := weakBool(false)
+	conn.send(Message{
+		IgnoreIfFalse: &ignore,
+		Arguments:     []json.RawMessage{[]byte(`"ping"`), []byte(`"ignored"`)},
+	})
+	conn.send(Message{
+		Arguments: []json.RawMessage{[]byte(`"ping"`), []byte(`"handled"`)},
+	})
+
+	select {
+	case got := <-called:
+		if got != "handled" {
+			t.Fatalf("expected only the non-ignored message, got %q", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("handler not called")
+	}
+
+	conn.Close(StatusNormalClosure, "done")
 }

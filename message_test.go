@@ -3,6 +3,7 @@ package wrapper
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -300,4 +301,102 @@ func TestResponseJSErrorUnmarshal(t *testing.T) {
 	if exp := "response error is not a string"; err == nil || err.Error() != exp {
 		t.Errorf("expected error '%v', got '%v'", exp, err)
 	}
+}
+
+func TestMessageLogValue(t *testing.T) {
+	reqID := 3
+	ignore := weakBool(false)
+	event := func(args ...string) []json.RawMessage {
+		raw := make([]json.RawMessage, len(args))
+		for i, a := range args {
+			raw[i] = json.RawMessage(a)
+		}
+		return raw
+	}
+
+	tests := []struct {
+		name string
+		msg  Message
+		want map[string]string
+	}{
+		{
+			name: "ignored",
+			msg:  Message{IgnoreIfFalse: &ignore, Arguments: event(`"ping"`)},
+			want: map[string]string{"ignored": "true"},
+		},
+		{
+			name: "event on named channel",
+			msg:  Message{Channel: "room", Arguments: event(`"ping"`, `1`)},
+			want: map[string]string{"ch": "room", "event": "ping", "args[0]": "1"},
+		},
+		{
+			name: "request on anonymous channel",
+			msg:  Message{AnonymousChannel: 2, RequestID: &reqID, Arguments: event(`"ask"`)},
+			want: map[string]string{"anonCh": "2", "event": "ask", "reqID": "3"},
+		},
+		{
+			name: "anonymous channel abort",
+			msg:  Message{AnonymousChannel: 2, CancelReason: "stop"},
+			want: map[string]string{"anonCh": "2", "cancelReason": "stop", "jsError": "false"},
+		},
+		{
+			name: "anonymous channel created",
+			msg:  Message{AnonymousChannel: 1, RequestID: &reqID},
+			want: map[string]string{"reqID": "3", "anonChCreated": "true"},
+		},
+		{
+			name: "request cancellation",
+			msg:  Message{RequestID: &reqID, CancelReason: "stop", ResponseJSError: true},
+			want: map[string]string{"reqID": "3", "cancelReason": "stop", "jsError": "true"},
+		},
+		{
+			name: "rejection",
+			msg:  Message{RequestID: &reqID, ResponseError: "nope"},
+			want: map[string]string{"reqID": "3", "error": "nope", "jsError": "false"},
+		},
+		{
+			name: "resolution",
+			msg:  Message{RequestID: &reqID, ResponseData: "ok"},
+			want: map[string]string{"reqID": "3", "data": "ok"},
+		},
+		{
+			name: "invalid",
+			msg:  Message{},
+			want: map[string]string{"invalid": "true"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := map[string]string{}
+			for _, attr := range tc.msg.LogValue().Group() {
+				got[attr.Key] = attr.Value.String()
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("expected attrs %v, got %v", tc.want, got)
+			}
+			for k, v := range tc.want {
+				if got[k] != v {
+					t.Errorf("attr %q: expected %q, got %q", k, v, got[k])
+				}
+			}
+		})
+	}
+
+	t.Run("long argument is truncated", func(t *testing.T) {
+		long := `"` + strings.Repeat("x", 2000) + `"`
+		msg := Message{Arguments: event(`"ping"`, long)}
+		for _, attr := range msg.LogValue().Group() {
+			if attr.Key != "args[0]" {
+				continue
+			}
+			s := attr.Value.String()
+			if len(s) != 1024 || !strings.HasSuffix(s, "...(truncated)") {
+				t.Fatalf("expected 1024-byte truncated value, got %d bytes ending %q",
+					len(s), s[len(s)-20:])
+			}
+			return
+		}
+		t.Fatal("args[0] attribute not found")
+	})
 }

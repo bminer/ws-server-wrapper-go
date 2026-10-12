@@ -349,3 +349,30 @@ func TestServerChannelCloseMarksChannelClosed(t *testing.T) {
 		}
 	}
 }
+
+func TestClientNilHandlerRemovesHandler(t *testing.T) {
+	client := NewClient(nil)
+	room := client.Of("room")
+
+	room.On("a", func() error { return nil })
+	room.Once("b", func() error { return nil })
+	room.On("a", nil)
+	room.Once("b", nil)
+
+	if _, ok := client.handlers[handlerName{Channel: "room", Event: "a"}]; ok {
+		t.Error("expected On(name, nil) to remove the persistent handler")
+	}
+	if _, ok := client.handlersOnce[handlerName{Channel: "room", Event: "b"}]; ok {
+		t.Error("expected Once(name, nil) to remove the once handler")
+	}
+}
+
+func TestClientInvalidHandlerPanics(t *testing.T) {
+	client := NewClient(nil)
+	defer func() {
+		if recover() == nil {
+			t.Fatal("expected On to panic for an invalid handler")
+		}
+	}()
+	client.Of("room").On("a", 42)
+}
