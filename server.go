@@ -1,3 +1,35 @@
+// Package wrapper implements the [ws-wrapper] protocol over any WebSocket
+// transport, adding named events, request/response (RPC), named channels, and
+// async streaming to a raw WebSocket connection.
+//
+// # Core types
+//
+//   - [Server] — accepts inbound WebSocket connections and dispatches events to
+//     registered handlers. Register handlers with [Server.On] or [Server.Once];
+//     scope them to a named channel with [Server.Of].
+//   - [Client] — represents a single WebSocket connection (server-side or
+//     standalone). Handlers registered on a [Client] take precedence over the
+//     matching [Server] handler for that client.
+//   - [AnonymousChannel] — a request-scoped sub-channel returned by a handler
+//     to stream events or exchange multiple messages with the requesting client
+//     over a single WebSocket connection.
+//
+// # Event handlers
+//
+// Handler functions may accept an optional leading [context.Context] argument.
+// Use [ClientFromContext] to retrieve the [*Client] that sent the event.
+//
+// # Transports
+//
+// This package has no WebSocket library dependency of its own. Wrap any library
+// by implementing the [Conn] interface, or use one of the ready-made adapters:
+//
+//   - github.com/bminer/ws-server-wrapper-go/adapters/coder   ([coder/websocket])
+//   - github.com/bminer/ws-server-wrapper-go/adapters/gorilla ([gorilla/websocket])
+//
+// [ws-wrapper]: https://github.com/bminer/ws-wrapper
+// [coder/websocket]: https://github.com/coder/websocket
+// [gorilla/websocket]: https://github.com/gorilla/websocket
 package wrapper
 
 import (

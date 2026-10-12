@@ -61,11 +61,27 @@ type HandlerContextFunc func(
 	eventName string,
 ) context.Context
 
-// Type aliases for "reserved" event handlers
+// OpenHandler is the function signature for "open"/"connect" event handlers
+// registered on the main channel of a [Server] or [Client].
 type OpenHandler = func(*Client)
+
+// ErrorHandler is the function signature for "error" event handlers registered
+// on the main channel of a [Server] or [Client].
 type ErrorHandler = func(*Client, error)
+
+// MessageHandler is the function signature for "message" event handlers
+// registered on the main channel of a [Server] or [Client]. The handler is
+// called for every inbound message before the message is dispatched to its
+// event handler; it is primarily useful for logging.
 type MessageHandler = func(*Client, Message)
+
+// CloseHandler is the function signature for "close"/"disconnect" event
+// handlers. userClosed is true only when [Client.Close] was called explicitly
+// by local code, which lets reconnection logic skip deliberate disconnections.
 type CloseHandler = func(*Client, StatusCode, string, bool)
+
+// CloseHandlerOld is the legacy three-argument form of [CloseHandler], kept for
+// backward compatibility. Prefer [CloseHandler] for new code.
 type CloseHandlerOld = func(*Client, StatusCode, string)
 
 // Calls the handler function with the given arguments. Passes the Context to

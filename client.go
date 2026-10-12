@@ -229,14 +229,18 @@ func (c *Client) close(
 	return conn.Close(status, reason)
 }
 
-// Get returns the data for the client at the specified key
+// Get returns the value stored under key in the client's data map. The data
+// map is a simple key-value store for associating arbitrary per-client state
+// (e.g. user ID, session token) without needing a separate lookup table.
+// Returns nil if the key is not set. See also [Client.Set].
 func (c *Client) Get(key string) any {
 	c.dataMu.Lock()
 	defer c.dataMu.Unlock()
 	return c.data[key]
 }
 
-// Set sets the data for the client at the specified key
+// Set stores value under key in the client's per-connection data map. See
+// [Client.Get] for details on the data map.
 func (c *Client) Set(key string, value any) {
 	c.dataMu.Lock()
 	defer c.dataMu.Unlock()
@@ -759,7 +763,7 @@ func (c *Client) handleEvent(
 		if msg.AnonymousChannel != 0 {
 			handlerCtxChanName = strconv.Itoa(msg.AnonymousChannel)
 		}
-		handlerCtx = handlerCtxFunc(ctx, handlerCtxChanName, eventName)
+		handlerCtx = handlerCtxFunc(handlerCtx, handlerCtxChanName, eventName)
 	}
 	// For inbound requests, create a request-specific cancellable context and
 	// inject the anonymous channel factory, so handlers can call Channel(ctx).
@@ -776,7 +780,9 @@ func (c *Client) handleEvent(
 				if anonChan == nil {
 					// Inbound anonymous channels are not tied to a request
 					// context, so pass context.Background() as reqCtx.
-					anonChan = newAnonymousChannel(ctx, context.Background(), *msg.RequestID, c)
+					anonChan = newAnonymousChannel(
+						ctx, context.Background(), *msg.RequestID, c,
+					)
 				}
 				return anonChan
 			},

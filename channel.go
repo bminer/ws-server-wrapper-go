@@ -9,7 +9,8 @@ import (
 // ClientChannel is a channel on which events can be sent and received. Events
 // emitted or requests sent are sent to the specific client's channel on the
 // remote end. See ClientChannel.On for more information about how received
-// events are handled.
+// events are handled. Do not share ClientChannel across multiple goroutines,
+// especially if On/Once could be called concurrently with Close.
 type ClientChannel struct {
 	name   string
 	client *Client
@@ -184,7 +185,9 @@ func (ch *ClientChannel) Close() error {
 // ServerChannel is a channel on which events can be sent and received. Events
 // emitted or requests sent are sent to all connected clients to the channel of
 // the same name on the remote end. See ClientChannel.On for more information
-// about how received events are handled.
+// about how received events are handled. Do not share ServerChannel across
+// multiple goroutines, especially if On/Once could be called concurrently with
+// Close.
 type ServerChannel struct {
 	name   string
 	server *Server
